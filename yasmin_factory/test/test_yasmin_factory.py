@@ -192,6 +192,31 @@ class TestYasminFactory(unittest.TestCase):
         self.assertTrue(blackboard.contains("final_data_2"))
         self.assertEqual(blackboard.get("final_data_2"), "processed_processed_start")
 
+    def test_file_path_include_from_sibling_directory(self):
+        """Relative includes may leave the file's directory, as in C++."""
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "main"))
+            os.makedirs(os.path.join(root, "common"))
+            with open(os.path.join(root, "common", "sub.xml"), "w") as sub:
+                sub.write(
+                    '<StateMachine name="Sub" outcomes="done">'
+                    '<State name="S" type="cpp" class="yasmin_factory/TestSimpleState">'
+                    '<Transition from="outcome1" to="done"/>'
+                    '<Transition from="outcome2" to="done"/>'
+                    "</State></StateMachine>"
+                )
+            main_path = os.path.join(root, "main", "main.xml")
+            with open(main_path, "w") as main:
+                main.write(
+                    '<StateMachine name="Main" outcomes="end">'
+                    '<StateMachine name="SUB" file_path="../common/sub.xml">'
+                    '<Transition from="done" to="end"/>'
+                    "</StateMachine></StateMachine>"
+                )
+
+            sm = self.factory.create_sm_from_file(main_path)
+            self.assertEqual(sm(Blackboard()), "end")
+
     def test_file_path_mechanism(self):
         """Test including external state machine via file_path attribute."""
         xml_file = os.path.join(self.test_dir, "test_file_path_sm.xml")

@@ -223,7 +223,15 @@ void with_typed_xml_value(const std::string &value_str,
 
   if (normalized_type == "int") {
     std::size_t pos = 0;
-    int result = std::stoi(value_str, &pos);
+    int result = 0;
+    try {
+      result = std::stoi(value_str, &pos);
+    } catch (const std::out_of_range &) {
+      throw std::runtime_error("Integer value '" + value_str +
+                               "' is out of range for int");
+    } catch (const std::invalid_argument &) {
+      throw std::runtime_error("Invalid integer value '" + value_str + "'");
+    }
     if (pos != value_str.size()) {
       throw std::runtime_error("Trailing characters in integer value '" +
                                value_str + "'");
@@ -234,7 +242,12 @@ void with_typed_xml_value(const std::string &value_str,
 
   if (normalized_type == "float") {
     std::size_t pos = 0;
-    double result = std::stod(value_str, &pos);
+    double result = 0.0;
+    try {
+      result = std::stod(value_str, &pos);
+    } catch (const std::logic_error &) {
+      throw std::runtime_error("Invalid float value '" + value_str + "'");
+    }
     if (pos != value_str.size()) {
       throw std::runtime_error("Trailing characters in float value '" +
                                value_str + "'");

@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
 import rclpy
 from yasmin_ros.yasmin_node import YasminNode
 
@@ -23,7 +25,7 @@ from yasmin_ros import set_ros_loggers
 from yasmin_viewer import YasminViewerPub
 
 
-def main() -> None:
+def main() -> int:
     # Initialize ROS 2
     rclpy.init()
 
@@ -40,26 +42,52 @@ def main() -> None:
         node.get_parameter("enable_viewer_pub").get_parameter_value().bool_value
     )
 
+    # Only build and validate the state machine (used by `ros2 yasmin validate`)
+    node.declare_parameter("validate_only", False)
+    node.declare_parameter("strict_validation", True)
+    validate_only = node.get_parameter("validate_only").value
+    strict_validation = node.get_parameter("strict_validation").value
+
     # Set ROS 2 loggers
     set_ros_loggers()
     yasmin.YASMIN_LOG_INFO("yasmin_factory_node")
 
+    # 0: the state machine ended with an outcome; 1: it could not be created,
+    # validated or run; 130: it was canceled (e.g. by Ctrl-C).
+    exit_code = 0
+
     # Create a finite state machine (FSM)
     factory = YasminFactory()
-    sm = factory.create_sm_from_file(sm_file)
-    sm.set_sigint_handler(True)
-
-    # Publish FSM information for visualization
-    pub = None
-    if enable_viewer_pub:
-        pub = YasminViewerPub(sm)
-
-    # Execute the FSM
+    sm = None
     try:
-        outcome = sm()
-        yasmin.YASMIN_LOG_INFO(outcome)
+        sm = factory.create_sm_from_file(sm_file)
+        if validate_only:
+            sm.validate(strict_validation)
     except Exception as e:
-        yasmin.YASMIN_LOG_WARN(f"State machine execution failed: {e}")
+        print(f"Invalid state machine '{sm_file}': {e}", file=sys.stderr)
+        exit_code = 1
+
+    pub = None
+    if sm is not None and not validate_only:
+        sm.set_sigint_handler(True)
+        # Cancel when ROS shuts down (SIGTERM, a second SIGINT, or shutdown()).
+        node.context.on_shutdown(sm.cancel_state_machine)
+
+        # Publish FSM information for visualization
+        if enable_viewer_pub:
+            pub = YasminViewerPub(sm)
+
+        # Execute the FSM
+        try:
+            outcome = sm()
+            yasmin.YASMIN_LOG_INFO(outcome)
+        except Exception as e:
+            if sm.is_canceled():
+                yasmin.YASMIN_LOG_WARN("State machine canceled")
+                exit_code = 130
+            else:
+                yasmin.YASMIN_LOG_ERROR(f"State machine execution failed: {e}")
+                exit_code = 1
 
     if pub is not None:
         pub.shutdown()
@@ -70,6 +98,8 @@ def main() -> None:
     if rclpy.ok():
         rclpy.shutdown()
 
+    return exit_code
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

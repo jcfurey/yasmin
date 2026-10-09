@@ -215,18 +215,12 @@ class YasminFactory:
                     file_path = ""
 
         if file_path:
+            # Relative includes resolve against the including file's directory,
+            # as in the C++ factory, including sibling folders ("../common").
             if not os.path.isabs(file_path):
-                file_path = os.path.normpath(
+                file_path = os.path.realpath(
                     os.path.join(os.path.dirname(self._xml_path), file_path)
                 )
-                # Prevent path traversal outside the XML directory
-                xml_dir = os.path.realpath(os.path.dirname(self._xml_path))
-                resolved = os.path.realpath(file_path)
-                if not resolved.startswith(xml_dir + os.sep) and resolved != xml_dir:
-                    raise ValueError(
-                        f"File path '{file_path}' resolves outside the XML directory"
-                    )
-                file_path = resolved
 
             return self.create_sm_from_file(file_path)
 
