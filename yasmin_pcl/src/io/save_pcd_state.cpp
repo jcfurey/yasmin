@@ -106,14 +106,15 @@ std::string SavePcdState::execute(yasmin::Blackboard::SharedPtr blackboard) {
       return "aborted";
     }
 
-    const auto input_cloud =
+    const auto stored_cloud =
         blackboard->get<common::PclPointCloud2Ptr>("input_cloud");
 
-    if (!input_cloud) {
+    if (!stored_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
       return "aborted";
     }
-    common::validate_cloud(*input_cloud);
+    // PCL's writers assume packed rows: row padding would corrupt the file.
+    const auto input_cloud = common::pack_native_cloud(stored_cloud);
 
     if (this->is_canceled()) {
       return "aborted";

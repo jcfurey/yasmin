@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
@@ -133,6 +134,50 @@ inline TempFile make_temp_file(const std::string &stem,
   }
   close(fd);
   return TempFile(std::filesystem::path(tmpl));
+}
+
+/** @brief Organized cloud with x, y, z FLOAT32 and a trailing UINT8 'ring'.
+ *
+ *  Point i has x = i, y = 0, z = 0 and ring = i. Rows can be padded.
+ *  @param width Points per row.
+ *  @param height Number of rows.
+ *  @param row_padding Extra bytes at the end of each row.
+ *  @return Shared pointer to the cloud. */
+inline common::PclPointCloud2Ptr
+create_ring_cloud(std::uint32_t width, std::uint32_t height,
+                  std::uint32_t row_padding = 0) {
+  auto cloud = common::make_pcl_point_cloud2();
+  cloud->width = width;
+  cloud->height = height;
+  cloud->point_step = 13;
+  cloud->row_step = width * cloud->point_step + row_padding;
+  const char *names[] = {"x", "y", "z"};
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    pcl::PCLPointField field;
+    field.name = names[i];
+    field.offset = 4 * i;
+    field.datatype = pcl::PCLPointField::FLOAT32;
+    field.count = 1;
+    cloud->fields.push_back(field);
+  }
+  pcl::PCLPointField ring;
+  ring.name = "ring";
+  ring.offset = 12;
+  ring.datatype = pcl::PCLPointField::UINT8;
+  ring.count = 1;
+  cloud->fields.push_back(ring);
+  cloud->data.assign(std::size_t(cloud->row_step) * height, 0xEE);
+  for (std::uint32_t row = 0; row < height; ++row) {
+    for (std::uint32_t col = 0; col < width; ++col) {
+      const std::uint32_t index = row * width + col;
+      const float xyz[3] = {float(index), 0.0F, 0.0F};
+      auto *point = cloud->data.data() + std::size_t(row) * cloud->row_step +
+                    std::size_t(col) * cloud->point_step;
+      std::memcpy(point, xyz, sizeof(xyz));
+      point[12] = static_cast<std::uint8_t>(index);
+    }
+  }
+  return cloud;
 }
 
 } // namespace yasmin_pcl::test

@@ -79,3 +79,27 @@ TEST(SavePlyState, AbortsWhenFilePathIsEmpty) {
 
   EXPECT_EQ(state(blackboard), "aborted");
 }
+
+TEST(SavePlyState, PacksPaddedRowsBeforeWriting) {
+  // PCL's writers address point i at i * point_step and ignore row padding.
+  for (const char *mode : {"ascii", "binary"}) {
+    auto temp_file = yasmin_pcl::test::make_temp_file("padded", ".ply");
+    yasmin_pcl::io::SavePlyState state;
+    state.set_parameter<std::string>("file_path", temp_file.path().string());
+    state.set_parameter<bool>("binary_mode", std::string(mode) == "binary");
+    state.configure();
+
+    auto blackboard = yasmin::Blackboard::make_shared();
+    blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+        "input_cloud", yasmin_pcl::test::create_ring_cloud(3, 2, 4));
+    ASSERT_EQ(state(blackboard), "succeeded") << mode;
+
+    pcl::PCLPointCloud2 loaded;
+    ASSERT_GE(pcl::io::loadPLYFile(temp_file.path().string(), loaded), 0) << mode;
+    const auto xyz = yasmin_pcl::test::to_xyz_cloud(loaded);
+    ASSERT_EQ(xyz.points.size(), 6U) << mode;
+    for (std::size_t i = 0; i < xyz.points.size(); ++i) {
+      EXPECT_FLOAT_EQ(xyz.points[i].x, float(i)) << mode << " point " << i;
+    }
+  }
+}

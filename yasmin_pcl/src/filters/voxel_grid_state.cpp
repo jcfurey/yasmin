@@ -17,8 +17,10 @@
 #include <pcl/filters/voxel_grid.h>
 
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <limits>
+#include <stdexcept>
 #include <string>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -28,6 +30,52 @@
 #include "yasmin_pcl/common/filter_state_utils.hpp"
 
 namespace yasmin_pcl::filters {
+namespace {
+
+// VoxelGrid only logs a warning and returns its input unfiltered when voxel
+// indices would overflow, so mirror its check (bounds over the selected
+// points, float inverse leaf size) and fail instead.
+void require_voxel_index_range(const common::PclPointCloud2Ptr &cloud,
+                               const pcl::IndicesPtr &indices,
+                               const Eigen::Array3f &leaf,
+                               const std::string &field_name,
+                               double limit_min, double limit_max,
+                               bool limit_negative) {
+  const int x = pcl::getFieldIndex(*cloud, "x");
+  const int y = pcl::getFieldIndex(*cloud, "y");
+  const int z = pcl::getFieldIndex(*cloud, "z");
+  Eigen::Vector4f min_p, max_p;
+  if (field_name.empty() && indices) {
+    pcl::getMinMax3D(cloud, *indices, x, y, z, min_p, max_p);
+  } else if (field_name.empty()) {
+    pcl::getMinMax3D(cloud, x, y, z, min_p, max_p);
+  } else if (indices) {
+    pcl::getMinMax3D(cloud, *indices, x, y, z, field_name,
+                     static_cast<float>(limit_min),
+                     static_cast<float>(limit_max), min_p, max_p,
+                     limit_negative);
+  } else {
+    pcl::getMinMax3D(cloud, x, y, z, field_name,
+                     static_cast<float>(limit_min),
+                     static_cast<float>(limit_max), min_p, max_p,
+                     limit_negative);
+  }
+  double voxels = 1.0;
+  for (int i = 0; i < 3; ++i) {
+    if (!(min_p[i] <= max_p[i])) {
+      return; // no finite point selected; PCL outputs an empty cloud
+    }
+    const float span = (max_p[i] - min_p[i]) * (1.0F / leaf[i]);
+    voxels *= std::floor(static_cast<double>(span)) + 1.0;
+  }
+  if (voxels > static_cast<double>(std::numeric_limits<std::int32_t>::max())) {
+    throw std::invalid_argument(
+        "Voxel leaf size is too small for the cloud extent: voxel indices "
+        "would overflow");
+  }
+}
+
+} // namespace
 
 VoxelGridState::VoxelGridState() : yasmin::State({"succeeded", "aborted"}) {
   this->leaf_size_x_ = 0.1F;
@@ -152,6 +200,12 @@ std::string VoxelGridState::execute(yasmin::Blackboard::SharedPtr blackboard) {
     }
 
     common::set_optional_input_indices(filter, blackboard);
+    require_voxel_index_range(
+        input_cloud, filter.getIndices(),
+        Eigen::Array3f(this->leaf_size_x_, this->leaf_size_y_,
+                       this->leaf_size_z_),
+        this->filter_field_name_, this->filter_limit_min_,
+        this->filter_limit_max_, this->filter_limit_negative_);
 
     auto output_cloud = common::make_pcl_point_cloud2();
     filter.filter(*output_cloud);

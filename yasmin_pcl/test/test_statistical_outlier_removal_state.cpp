@@ -82,3 +82,19 @@ TEST(StatisticalOutlierRemovalState, ReturnsOutlierWhenNegativeEnabled) {
   EXPECT_FLOAT_EQ(xyz_cloud.points[0].y, 10.0F);
   EXPECT_FLOAT_EQ(xyz_cloud.points[0].z, 10.0F);
 }
+
+TEST(StatisticalOutlierRemovalState, RejectsZeroStddevMultiplier) {
+  // PCL treats 0 as unset and returns an empty cloud after logging an error.
+  yasmin_pcl::filters::StatisticalOutlierRemovalState state;
+  state.set_parameter<int>("mean_k", 3);
+  state.set_parameter<double>("stddev_mul_thresh", 0.0);
+  state.configure();
+
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr(
+                         {{0, 0, 0}, {0.1F, 0, 0}, {0, 0.1F, 0}, {5, 5, 5}}));
+
+  EXPECT_EQ(state(blackboard), "aborted");
+  EXPECT_FALSE(blackboard->contains("output_cloud"));
+}

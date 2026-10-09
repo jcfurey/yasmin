@@ -97,13 +97,7 @@ ExtractIndicesState::execute(yasmin::Blackboard::SharedPtr blackboard) {
     pcl::ExtractIndices<pcl::PCLPointCloud2> filter;
     filter.setInputCloud(input_cloud);
     filter.setNegative(this->negative_);
-    filter.setKeepOrganized(this->keep_organized_);
-    filter.setUserFilterValue(this->user_filter_value_);
     common::set_optional_input_indices(filter, blackboard);
-
-    auto output_cloud = common::make_pcl_point_cloud2();
-    filter.filter(*output_cloud);
-    blackboard->set<common::PclPointCloud2Ptr>("output_cloud", output_cloud);
 
     const auto indices_ptr = filter.getIndices();
     const auto domain_indices = common::make_domain_indices(input_cloud);
@@ -121,6 +115,21 @@ ExtractIndicesState::execute(yasmin::Blackboard::SharedPtr blackboard) {
     } else {
       output_indices = *indices_ptr;
     }
+
+    auto output_cloud = common::make_pcl_point_cloud2();
+    if (this->keep_organized_) {
+      // PCL's organized ExtractIndices writes a float at every field offset,
+      // overrunning fields narrower than 4 bytes and, at the last point, the
+      // buffer. Mask the removed points here instead.
+      *output_cloud = *input_cloud;
+      common::mask_points(
+          *output_cloud,
+          common::compute_removed_indices(domain_indices, output_indices),
+          this->user_filter_value_);
+    } else {
+      filter.filter(*output_cloud);
+    }
+    blackboard->set<common::PclPointCloud2Ptr>("output_cloud", output_cloud);
     blackboard->set<common::Indices>("output_indices", output_indices);
 
     if (this->extract_removed_indices_) {

@@ -13,6 +13,10 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 
 #include <algorithm>
@@ -118,4 +122,34 @@ TEST(VoxelGridState, RejectsInvalidLeafSizes) {
     state.configure();
     EXPECT_EQ(state(blackboard), "aborted");
   }
+}
+
+TEST(VoxelGridState, RejectsLeafTooSmallForCloudExtent) {
+  // PCL only logs a warning and returns the input unfiltered on overflow.
+  yasmin_pcl::filters::VoxelGridState state;
+  state.set_parameter<float>("leaf_size_x", 1e-4F);
+  state.set_parameter<float>("leaf_size_y", 1e-4F);
+  state.set_parameter<float>("leaf_size_z", 1e-4F);
+  state.configure();
+
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud",
+      yasmin_pcl::test::create_pcl_cloud_ptr({{0, 0, 0}, {100, 100, 100}}));
+  EXPECT_EQ(state(blackboard), "aborted");
+  EXPECT_FALSE(blackboard->contains("output_cloud"));
+
+  // The same leaf is valid over a selected subset with a small extent.
+  blackboard->set<yasmin_pcl::common::Indices>("input_indices", {0});
+  EXPECT_EQ(state(blackboard), "succeeded");
+}
+
+TEST(VoxelGridState, AcceptsXmlAndPythonParameterTypes) {
+  // XML stores double and int; Python stores double and int64.
+  yasmin_pcl::filters::VoxelGridState state;
+  state.set_parameter<double>("leaf_size_x", 1.0);
+  state.set_parameter<double>("leaf_size_y", 1.0);
+  state.set_parameter<double>("leaf_size_z", 1.0);
+  state.set_parameter<std::int64_t>("minimum_points_number_per_voxel", 1);
+  EXPECT_NO_THROW(state.configure());
 }

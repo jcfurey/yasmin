@@ -15,6 +15,9 @@
 #ifndef YASMIN_PCL__COMMON__FILTER_STATE_UTILS_HPP_
 #define YASMIN_PCL__COMMON__FILTER_STATE_UTILS_HPP_
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -60,6 +63,32 @@ inline Indices compute_removed_indices(const Indices &domain_indices,
     }
   }
   return removed;
+}
+
+/**
+ * @brief Overwrite the floating-point fields of the given points with a value.
+ *
+ * Used for organized outputs. Integer fields keep their values and writes stay
+ * within each field. The cloud must be packed (see prepare_filter_cloud()).
+ */
+inline void mask_points(pcl::PCLPointCloud2 &cloud, const Indices &indices,
+                        float value) {
+  const double value64 = value;
+  for (const int index : indices) {
+    auto *point = cloud.data.data() + std::size_t(index) * cloud.point_step;
+    for (const auto &field : cloud.fields) {
+      for (std::uint32_t k = 0; k < field.count; ++k) {
+        if (field.datatype == pcl::PCLPointField::FLOAT32) {
+          std::memcpy(point + field.offset + 4 * k, &value, 4);
+        } else if (field.datatype == pcl::PCLPointField::FLOAT64) {
+          std::memcpy(point + field.offset + 8 * k, &value64, 8);
+        }
+      }
+    }
+  }
+  if (!indices.empty() && !std::isfinite(value)) {
+    cloud.is_dense = false;
+  }
 }
 
 /**

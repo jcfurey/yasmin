@@ -91,8 +91,10 @@ std::string StatisticalOutlierRemovalState::execute(
       pcl::StatisticalOutlierRemoval<pcl::PCLPointCloud2>>(
       blackboard, "StatisticalOutlierRemoval", this->extract_removed_indices_,
       [this](auto &filter) {
+        // PCL's PCLPointCloud2 filter treats a zero multiplier as unset and
+        // returns an empty cloud after only logging an error.
         if (this->mean_k_ <= 0 || !std::isfinite(this->stddev_mul_thresh_) ||
-            this->stddev_mul_thresh_ < 0) {
+            this->stddev_mul_thresh_ <= 0) {
           throw std::invalid_argument("Invalid outlier removal parameters");
         }
         filter.setMeanK(this->mean_k_);

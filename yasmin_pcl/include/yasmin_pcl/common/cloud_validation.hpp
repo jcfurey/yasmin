@@ -72,10 +72,11 @@ void require_float_field(const Cloud &cloud, const std::string &name) {
   }
 }
 
-// PCL's binary filters use flat point indices and native-endian float loads.
-// Pack organized rows without changing the caller's cloud. Reject foreign
-// byte order explicitly instead of interpreting those bytes as native floats.
-inline PclPointCloud2Ptr prepare_filter_cloud(const PclPointCloud2Ptr &cloud) {
+// PCL's filters and file writers address point i at i * point_step and load
+// native-endian values. Pack organized rows without changing the caller's
+// cloud. Reject foreign byte order explicitly instead of interpreting those
+// bytes as native values.
+inline PclPointCloud2Ptr pack_native_cloud(const PclPointCloud2Ptr &cloud) {
   if (!cloud) {
     throw std::invalid_argument("Input PCL point cloud pointer is null");
   }
@@ -84,14 +85,7 @@ inline PclPointCloud2Ptr prepare_filter_cloud(const PclPointCloud2Ptr &cloud) {
   const bool native_bigendian =
       *reinterpret_cast<const unsigned char *>(&endian_probe) == 0;
   if (bool(cloud->is_bigendian) != native_bigendian) {
-    throw std::invalid_argument("PCL filters require native-endian point data");
-  }
-  if (std::uint64_t(cloud->width) * cloud->height >
-      std::uint64_t(std::numeric_limits<int>::max())) {
-    throw std::invalid_argument("Point cloud exceeds PCL's index range");
-  }
-  for (const auto *name : {"x", "y", "z"}) {
-    require_float_field(*cloud, name);
+    throw std::invalid_argument("PCL requires native-endian point data");
   }
   const auto row_size = cloud->width * cloud->point_step;
   if (cloud->row_step == row_size) {
@@ -107,6 +101,20 @@ inline PclPointCloud2Ptr prepare_filter_cloud(const PclPointCloud2Ptr &cloud) {
                   cloud->data.data() + std::size_t(row) * cloud->row_step,
                   row_size);
     }
+  }
+  return packed;
+}
+
+// PCL's binary filters additionally use int point indices and require scalar
+// FLOAT32 coordinates.
+inline PclPointCloud2Ptr prepare_filter_cloud(const PclPointCloud2Ptr &cloud) {
+  auto packed = pack_native_cloud(cloud);
+  if (std::uint64_t(packed->width) * packed->height >
+      std::uint64_t(std::numeric_limits<int>::max())) {
+    throw std::invalid_argument("Point cloud exceeds PCL's index range");
+  }
+  for (const auto *name : {"x", "y", "z"}) {
+    require_float_field(*packed, name);
   }
   return packed;
 }
