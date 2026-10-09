@@ -15,6 +15,8 @@
 #include "yasmin/state_machine.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <exception>
 #include <memory>
@@ -24,9 +26,15 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <fcntl.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "yasmin/blackboard.hpp"
 #include "yasmin/concurrence.hpp"
@@ -40,41 +48,191 @@
 using namespace yasmin;
 
 namespace {
-std::mutex sigint_registry_mutex;
-std::unordered_map<int, std::function<void()>> sigint_callbacks;
-int next_sigint_id = 0;
-bool sigint_handler_installed = false;
+
+// SIGINT handling is split in two. The handler only performs
+// async-signal-safe work (atomics and a pipe write); a dispatcher thread runs
+// the registered cancellation callbacks in an ordinary thread context, where
+// they may lock mutexes, log, or acquire the Python GIL.
+//
+// The first SIGINT while a state machine is registered cancels it and keeps
+// the ROS context alive, so remote goals can still be canceled. A repeated
+// SIGINT before the registrations end is forwarded to the previously
+// installed handler (rclcpp, rclpy or the default action), so a cancellation
+// that does not finish can still be escalated.
+struct SigintRegistry {
+  std::mutex mutex;
+  std::unordered_map<int, std::function<void()>> callbacks;
+  int next_id = 0;
+  bool handler_installed = false;
+  bool dispatcher_started = false;
+  unsigned char generation = 0;
+};
+
+// Intentionally leaked: the detached dispatcher must never observe a
+// registry destroyed during static destruction.
+SigintRegistry &sigint_registry() {
+  static auto *registry = new SigintRegistry();
+  return *registry;
+}
+
+// State read by the signal handler: lock-free atomics, plus the previous
+// action, which is only written while this handler is not installed.
+std::atomic<int> sigint_pipe_write_fd{-1};
+std::atomic<bool> sigint_active{false};
+std::atomic<bool> sigint_pending{false};
+std::atomic<unsigned char> sigint_generation{0};
 struct sigaction previous_sigint_action{};
 
-extern "C" void sigint_handler(int) {
-  std::lock_guard<std::mutex> lock(sigint_registry_mutex);
-  for (const auto &[id, cb] : sigint_callbacks) {
-    (void)id;
-    cb();
+static_assert(std::atomic<int>::is_always_lock_free &&
+                  std::atomic<bool>::is_always_lock_free &&
+                  std::atomic<unsigned char>::is_always_lock_free,
+              "SIGINT handler state must be lock-free");
+
+void forward_sigint(int signum, siginfo_t *info, void *context,
+                    bool allow_default_action) {
+  const struct sigaction &previous = previous_sigint_action;
+  if (previous.sa_flags & SA_SIGINFO) {
+    if (previous.sa_sigaction != nullptr) {
+      previous.sa_sigaction(signum, info, context);
+    }
+  } else if (previous.sa_handler == SIG_DFL) {
+    if (allow_default_action) {
+      // The signal is blocked while this handler runs, so the default
+      // action is taken as soon as the handler returns.
+      signal(signum, SIG_DFL);
+      raise(signum);
+    }
+  } else if (previous.sa_handler != SIG_IGN &&
+             previous.sa_handler != nullptr) {
+    previous.sa_handler(signum);
   }
 }
 
-int register_sigint_callback(std::function<void()> cb) {
-  std::lock_guard<std::mutex> lock(sigint_registry_mutex);
-  if (!sigint_handler_installed) {
-    struct sigaction sigint_action{};
-    sigint_action.sa_handler = sigint_handler;
-    sigemptyset(&sigint_action.sa_mask);
-    sigint_action.sa_flags = 0;
-    sigaction(SIGINT, &sigint_action, &previous_sigint_action);
-    sigint_handler_installed = true;
+extern "C" void sigint_handler(int signum, siginfo_t *info, void *context) {
+  const int saved_errno = errno;
+  if (!sigint_active.load()) {
+    // Another handler installed on top of this one still chains here.
+    forward_sigint(signum, info, context, false);
+  } else if (sigint_pending.exchange(true)) {
+    forward_sigint(signum, info, context, true);
+  } else {
+    const int fd = sigint_pipe_write_fd.load();
+    if (fd >= 0) {
+      const auto wake = static_cast<char>(sigint_generation.load());
+      // A full pipe already holds a pending wake-up.
+      [[maybe_unused]] const auto written = write(fd, &wake, 1);
+    }
   }
-  int id = next_sigint_id++;
-  sigint_callbacks[id] = std::move(cb);
+  errno = saved_errno;
+}
+
+void sigint_dispatch_loop(int read_fd) {
+  // Let other threads receive SIGINT while callbacks run here.
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGINT);
+  pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+
+  auto &registry = sigint_registry();
+  while (true) {
+    char wake = 0;
+    const auto count = read(read_fd, &wake, 1);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count <= 0) {
+      return;
+    }
+
+    // Callbacks run under the registry lock, so unregistering waits for an
+    // in-flight cancellation and the captured state machine stays alive.
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (static_cast<unsigned char>(wake) != registry.generation) {
+      continue; // wake-up from registrations that have since ended
+    }
+    for (const auto &[id, callback] : registry.callbacks) {
+      (void)id;
+      try {
+        callback();
+      } catch (const std::exception &error) {
+        YASMIN_LOG_ERROR("SIGINT cancellation failed: %s", error.what());
+      } catch (...) {
+        YASMIN_LOG_ERROR("SIGINT cancellation failed with an unknown error");
+      }
+    }
+  }
+}
+
+void start_sigint_dispatcher(SigintRegistry &registry) {
+  int fds[2];
+  if (pipe(fds) != 0) {
+    throw std::system_error(errno, std::generic_category(),
+                            "Failed to create the SIGINT pipe");
+  }
+  for (const int fd : fds) {
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+  }
+  fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
+
+  try {
+    std::thread(sigint_dispatch_loop, fds[0]).detach();
+  } catch (...) {
+    close(fds[0]);
+    close(fds[1]);
+    throw;
+  }
+  sigint_pipe_write_fd.store(fds[1]);
+  registry.dispatcher_started = true;
+}
+
+int register_sigint_callback(std::function<void()> cb) {
+  auto &registry = sigint_registry();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  if (!registry.dispatcher_started) {
+    start_sigint_dispatcher(registry);
+  }
+  if (!registry.handler_installed) {
+    struct sigaction sigint_action{};
+    sigint_action.sa_sigaction = sigint_handler;
+    sigemptyset(&sigint_action.sa_mask);
+    sigint_action.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGINT, &sigint_action, &previous_sigint_action) != 0) {
+      throw std::system_error(errno, std::generic_category(),
+                              "Failed to install the SIGINT handler");
+    }
+    registry.handler_installed = true;
+  }
+  if (registry.callbacks.empty()) {
+    sigint_generation.store(++registry.generation);
+    sigint_pending.store(false);
+    sigint_active.store(true);
+  }
+  int id = registry.next_id++;
+  registry.callbacks[id] = std::move(cb);
   return id;
 }
 
 void unregister_sigint_callback(int id) {
-  std::lock_guard<std::mutex> lock(sigint_registry_mutex);
-  sigint_callbacks.erase(id);
-  if (sigint_handler_installed && sigint_callbacks.empty()) {
+  auto &registry = sigint_registry();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  registry.callbacks.erase(id);
+  if (!registry.callbacks.empty()) {
+    return;
+  }
+  sigint_active.store(false);
+  if (!registry.handler_installed) {
+    return;
+  }
+
+  // Restore the previous action only if this handler is still the installed
+  // one. Otherwise a handler installed later chains here and would lose its
+  // own predecessor; stay in place as a pass-through instead.
+  struct sigaction current{};
+  if (sigaction(SIGINT, nullptr, &current) == 0 &&
+      (current.sa_flags & SA_SIGINFO) &&
+      current.sa_sigaction == sigint_handler) {
     sigaction(SIGINT, &previous_sigint_action, nullptr);
-    sigint_handler_installed = false;
+    registry.handler_installed = false;
   }
 }
 } // namespace

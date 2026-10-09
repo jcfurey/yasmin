@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+import os
+import signal
 import threading
 import time
 import unittest
@@ -509,6 +511,45 @@ class TestStateMachineCancelBehavior(unittest.TestCase):
         self.assertIn("State machine canceled:", str(result.get("exception")))
         self.assertFalse(second_entered.is_set())
         self.assertEqual(sm.get_current_state(), "")
+
+    def test_sigint_runs_python_cancel_outside_signal_context(self):
+        entered = threading.Event()
+        cancel_threads = []
+        result = {}
+
+        class PythonCancelState(BlockingCancelState):
+            def cancel_state(self):
+                cancel_threads.append(threading.get_ident())
+                super().cancel_state()
+
+        sm = StateMachine(outcomes=["done"], handle_sigint=True)
+        sm.add_state(
+            "FIRST", PythonCancelState(entered), transitions={"done": "done"}
+        )
+
+        def run_state_machine():
+            result["thread"] = threading.get_ident()
+            try:
+                sm(Blackboard())
+            except Exception as exc:
+                result["exception"] = exc
+
+        previous_handler = signal.getsignal(signal.SIGINT)
+        thread = threading.Thread(target=run_state_machine)
+        thread.start()
+        self.assertTrue(entered.wait(timeout=2.0))
+
+        # Handled by YASMIN: no KeyboardInterrupt reaches this thread.
+        os.kill(os.getpid(), signal.SIGINT)
+        thread.join(timeout=5.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertIn("State machine canceled:", str(result.get("exception")))
+        self.assertEqual(len(cancel_threads), 1)
+        self.assertNotIn(
+            cancel_threads[0], (threading.main_thread().ident, result["thread"])
+        )
+        self.assertIs(signal.getsignal(signal.SIGINT), previous_handler)
 
 
 # ---------------------------------------------------------------------------

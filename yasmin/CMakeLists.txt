@@ -109,6 +109,10 @@ if(BUILD_TESTING)
     target_link_libraries(${_test_name}_cpp ${PROJECT_NAME})
   endforeach()
 
+  # Changes process-wide signal dispositions, so it runs in its own process.
+  ament_add_gtest(test_sigint_handler_cpp test/test_sigint_handler.cpp)
+  target_link_libraries(test_sigint_handler_cpp ${PROJECT_NAME})
+
 endif()
 
 ament_package()
