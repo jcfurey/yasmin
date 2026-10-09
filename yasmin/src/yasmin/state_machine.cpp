@@ -49,21 +49,27 @@ using namespace yasmin;
 
 namespace {
 
-// SIGINT handling is split in two. The handler only performs
-// async-signal-safe work (atomics and a pipe write); a dispatcher thread runs
-// the registered cancellation callbacks in an ordinary thread context, where
-// they may lock mutexes, log, or acquire the Python GIL.
+// Termination signals (SIGINT and SIGTERM, which rclcpp also treats alike)
+// are handled in two parts. The handler only performs async-signal-safe work
+// (atomics and a pipe write); a dispatcher thread runs the registered
+// cancellation callbacks in an ordinary thread context, where they may lock
+// mutexes, log, or acquire the Python GIL.
 //
-// The first SIGINT while a state machine is registered cancels it and keeps
+// The first signal while a state machine is registered cancels it and keeps
 // the ROS context alive, so remote goals can still be canceled. A repeated
-// SIGINT before the registrations end is forwarded to the previously
-// installed handler (rclcpp, rclpy or the default action), so a cancellation
-// that does not finish can still be escalated.
+// signal before the registrations end is forwarded to that signal's
+// previously installed handler (rclcpp, rclpy or the default action), so a
+// cancellation that does not finish can still be escalated.
+constexpr int kHandledSignals[] = {SIGINT, SIGTERM};
+constexpr std::size_t kSignalCount = 2;
+
+std::size_t signal_index(int signum) { return signum == SIGTERM ? 1 : 0; }
+
 struct SigintRegistry {
   std::mutex mutex;
   std::unordered_map<int, std::function<void()>> callbacks;
   int next_id = 0;
-  bool handler_installed = false;
+  bool handler_installed[kSignalCount] = {false, false};
   bool dispatcher_started = false;
   unsigned char generation = 0;
 };
@@ -76,12 +82,12 @@ SigintRegistry &sigint_registry() {
 }
 
 // State read by the signal handler: lock-free atomics, plus the previous
-// action, which is only written while this handler is not installed.
+// actions, each only written while this handler is not installed for it.
 std::atomic<int> sigint_pipe_write_fd{-1};
 std::atomic<bool> sigint_active{false};
 std::atomic<bool> sigint_pending{false};
 std::atomic<unsigned char> sigint_generation{0};
-struct sigaction previous_sigint_action {};
+struct sigaction previous_actions[kSignalCount]{};
 
 static_assert(std::atomic<int>::is_always_lock_free &&
                   std::atomic<bool>::is_always_lock_free &&
@@ -90,7 +96,7 @@ static_assert(std::atomic<int>::is_always_lock_free &&
 
 void forward_sigint(int signum, siginfo_t *info, void *context,
                     bool allow_default_action) {
-  const struct sigaction &previous = previous_sigint_action;
+  const struct sigaction &previous = previous_actions[signal_index(signum)];
   if (previous.sa_flags & SA_SIGINFO) {
     if (previous.sa_sigaction != nullptr) {
       previous.sa_sigaction(signum, info, context);
@@ -126,10 +132,12 @@ extern "C" void sigint_handler(int signum, siginfo_t *info, void *context) {
 }
 
 void sigint_dispatch_loop(int read_fd) {
-  // Let other threads receive SIGINT while callbacks run here.
+  // Let other threads receive the signals while callbacks run here.
   sigset_t mask;
   sigemptyset(&mask);
-  sigaddset(&mask, SIGINT);
+  for (const int signum : kHandledSignals) {
+    sigaddset(&mask, signum);
+  }
   pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
   auto &registry = sigint_registry();
@@ -190,16 +198,19 @@ int register_sigint_callback(std::function<void()> cb) {
   if (!registry.dispatcher_started) {
     start_sigint_dispatcher(registry);
   }
-  if (!registry.handler_installed) {
-    struct sigaction sigint_action {};
-    sigint_action.sa_sigaction = sigint_handler;
-    sigemptyset(&sigint_action.sa_mask);
-    sigint_action.sa_flags = SA_SIGINFO;
-    if (sigaction(SIGINT, &sigint_action, &previous_sigint_action) != 0) {
-      throw std::system_error(errno, std::generic_category(),
-                              "Failed to install the SIGINT handler");
+  for (std::size_t i = 0; i < kSignalCount; ++i) {
+    if (registry.handler_installed[i]) {
+      continue;
     }
-    registry.handler_installed = true;
+    struct sigaction action {};
+    action.sa_sigaction = sigint_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_SIGINFO;
+    if (sigaction(kHandledSignals[i], &action, &previous_actions[i]) != 0) {
+      throw std::system_error(errno, std::generic_category(),
+                              "Failed to install a termination signal handler");
+    }
+    registry.handler_installed[i] = true;
   }
   if (registry.callbacks.empty()) {
     sigint_generation.store(++registry.generation);
@@ -219,19 +230,19 @@ void unregister_sigint_callback(int id) {
     return;
   }
   sigint_active.store(false);
-  if (!registry.handler_installed) {
-    return;
-  }
 
-  // Restore the previous action only if this handler is still the installed
+  // Restore a previous action only if this handler is still the installed
   // one. Otherwise a handler installed later chains here and would lose its
   // own predecessor; stay in place as a pass-through instead.
-  struct sigaction current {};
-  if (sigaction(SIGINT, nullptr, &current) == 0 &&
-      (current.sa_flags & SA_SIGINFO) &&
-      current.sa_sigaction == sigint_handler) {
-    sigaction(SIGINT, &previous_sigint_action, nullptr);
-    registry.handler_installed = false;
+  for (std::size_t i = 0; i < kSignalCount; ++i) {
+    struct sigaction current {};
+    if (registry.handler_installed[i] &&
+        sigaction(kHandledSignals[i], nullptr, &current) == 0 &&
+        (current.sa_flags & SA_SIGINFO) &&
+        current.sa_sigaction == sigint_handler) {
+      sigaction(kHandledSignals[i], &previous_actions[i], nullptr);
+      registry.handler_installed[i] = false;
+    }
   }
 }
 } // namespace

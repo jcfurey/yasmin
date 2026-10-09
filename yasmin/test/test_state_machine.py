@@ -512,6 +512,29 @@ class TestStateMachineCancelBehavior(unittest.TestCase):
         self.assertFalse(second_entered.is_set())
         self.assertEqual(sm.get_current_state(), "")
 
+    def test_cancel_state_releases_the_gil_while_waiting(self):
+        # The end callbacks run while the machine still counts as running, so
+        # cancel_state() waits for them; holding the GIL there would stop a
+        # Python callback from resuming.
+        entered = threading.Event()
+        sm = StateMachine(outcomes=["done"])
+        sm.add_state("S", FooState(), transitions={"outcome1": "S", "outcome2": "done"})
+
+        def end_cb(blackboard, outcome):
+            entered.set()
+            time.sleep(0.5)  # releases the GIL, then needs it back
+
+        sm.add_end_cb(end_cb)
+        worker = threading.Thread(target=lambda: sm(Blackboard()), daemon=True)
+        worker.start()
+        self.assertTrue(entered.wait(timeout=5.0))
+        canceller = threading.Thread(target=sm.cancel_state, daemon=True)
+        canceller.start()
+        canceller.join(timeout=5.0)
+        worker.join(timeout=5.0)
+        self.assertFalse(canceller.is_alive())
+        self.assertFalse(worker.is_alive())
+
     def test_sigint_runs_python_cancel_outside_signal_context(self):
         entered = threading.Event()
         cancel_threads = []

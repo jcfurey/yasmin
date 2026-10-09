@@ -184,7 +184,8 @@ PYBIND11_MODULE(state, m) {
       .def("configure", &yasmin::State::configure,
            "Configure the state before execution")
       .def("cancel_state", &yasmin::State::cancel_state,
-           "Cancel the current state execution")
+           "Cancel the current state execution",
+           py::call_guard<py::gil_scoped_release>())
       // Get outcomes method
       .def("get_outcomes", &yasmin::State::get_outcomes,
            "Get the set of possible outcomes for this state")

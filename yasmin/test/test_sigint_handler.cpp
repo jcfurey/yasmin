@@ -162,6 +162,36 @@ TEST_F(TestSigintHandler, RepeatedSigintEscalatesToPreviousHandler) {
   EXPECT_TRUE(sigint_handler_is(counting_handler));
 }
 
+TEST_F(TestSigintHandler, SigtermCancelsAndEscalatesLikeSigint) {
+  std::atomic_int previous_sigterm_calls{0};
+  static std::atomic_int *sigterm_counter = nullptr;
+  sigterm_counter = &previous_sigterm_calls;
+  struct sigaction counting {};
+  counting.sa_handler = [](int) { ++*sigterm_counter; };
+  sigemptyset(&counting.sa_mask);
+  struct sigaction original {};
+  sigaction(SIGTERM, &counting, &original);
+
+  auto state = std::make_shared<BlockingState>(false);
+  auto sm = make_sm(state);
+  auto result = std::async(std::launch::async, [&]() { return (*sm)(); });
+  ASSERT_TRUE(wait_for([&]() { return state->entered.load(); }));
+
+  ASSERT_EQ(kill(getpid(), SIGTERM), 0);
+  ASSERT_TRUE(wait_for([&]() { return state->cancel_calls.load() == 1; }));
+  EXPECT_EQ(previous_sigterm_calls.load(), 0);
+
+  ASSERT_EQ(kill(getpid(), SIGTERM), 0);
+  ASSERT_TRUE(wait_for([&]() { return previous_sigterm_calls.load() == 1; }));
+
+  state->released = true;
+  EXPECT_THROW(result.get(), StateMachineCancelException);
+  struct sigaction current {};
+  sigaction(SIGTERM, nullptr, &current);
+  EXPECT_EQ(current.sa_handler, counting.sa_handler);
+  sigaction(SIGTERM, &original, nullptr);
+}
+
 TEST_F(TestSigintHandler, LaterExecutionGetsFreshFirstSigint) {
   for (int run = 0; run < 2; ++run) {
     auto state = std::make_shared<BlockingState>(true);

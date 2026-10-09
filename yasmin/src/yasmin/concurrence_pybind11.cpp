@@ -68,7 +68,8 @@ PYBIND11_MODULE(concurrence, m) {
            py::arg("strict_mode") = false)
       // Cancel state method
       .def("cancel_state", &yasmin::Concurrence::cancel_state,
-           "Cancel the current state execution")
+           "Cancel the current state execution",
+           py::call_guard<py::gil_scoped_release>())
       // String representation
       .def("to_string", &yasmin::Concurrence::to_string,
            "Convert the concurrence to a string representation")

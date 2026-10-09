@@ -252,7 +252,12 @@ public:
 
   /**
    * @brief Sets whether the state machine should handle SIGINT for cancel.
-   * @param handle True to handle SIGINT, false to ignore or reset the handler.
+   *
+   * While executing, the first SIGINT or SIGTERM cancels the state machine
+   * outside the signal handler, keeping the ROS context valid; a repeated
+   * signal is forwarded to the previously installed handler.
+   *
+   * @param handle True to handle SIGINT and SIGTERM, false to leave them.
    */
   void set_sigint_handler(bool handle = true);
 

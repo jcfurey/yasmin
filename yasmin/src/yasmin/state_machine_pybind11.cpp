@@ -169,10 +169,14 @@ PYBIND11_MODULE(state_machine, m) {
       .def("validate", &yasmin::StateMachine::validate,
            "Validate the state machine configuration",
            py::arg("strict_mode") = false)
+      // Cancellation may wait for the executing thread, which can need the
+      // GIL for Python states and callbacks.
       .def("cancel_state", &yasmin::StateMachine::cancel_state,
-           "Cancel the current state execution")
+           "Cancel the current state execution",
+           py::call_guard<py::gil_scoped_release>())
       .def("cancel_state_machine", &yasmin::StateMachine::cancel_state_machine,
-           "Cancel the complete state machine execution")
+           "Cancel the complete state machine execution",
+           py::call_guard<py::gil_scoped_release>())
       .def("set_sigint_handler", &yasmin::StateMachine::set_sigint_handler,
            "Set whether the state machine should handle SIGINT for cancel",
            py::arg("handle") = true)

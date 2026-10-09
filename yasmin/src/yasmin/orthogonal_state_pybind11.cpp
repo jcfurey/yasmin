@@ -51,7 +51,8 @@ PYBIND11_MODULE(orthogonal_state, m) {
       .def("validate", &yasmin::OrthogonalState::validate,
            "Recursively validate region state machines",
            py::arg("strict_mode") = false)
-      .def("cancel_state", &yasmin::OrthogonalState::cancel_state)
+      .def("cancel_state", &yasmin::OrthogonalState::cancel_state,
+           py::call_guard<py::gil_scoped_release>())
       .def("to_string", &yasmin::OrthogonalState::to_string)
       .def("__str__", &yasmin::OrthogonalState::to_string);
 
