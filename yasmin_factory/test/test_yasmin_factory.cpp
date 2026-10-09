@@ -122,6 +122,27 @@ TEST_F(TestYasminFactory, TestCreatePythonState) {
   }
 }
 
+TEST_F(TestYasminFactory,
+       PythonProxyResetsInnerLifecycleAndTracksCancellation) {
+  tinyxml2::XMLDocument doc;
+  ASSERT_EQ(doc.Parse(R"(
+    <State name="lifecycle" type="py" module="test.test_simple_state" class="LifecycleState"/>
+  )"),
+            tinyxml2::XML_SUCCESS);
+  auto state = factory->create_state(doc.FirstChildElement("State"));
+  auto blackboard = yasmin::Blackboard::make_shared();
+  state->cancel_state();
+  EXPECT_TRUE(state->is_canceled());
+  EXPECT_TRUE(state->get_inner_state()->is_canceled());
+  EXPECT_EQ((*state)(blackboard), "done");
+  EXPECT_TRUE(blackboard->get<bool>("inner_running"));
+  EXPECT_TRUE(state->is_completed());
+  EXPECT_TRUE(state->get_inner_state()->is_completed());
+  state->cancel_state();
+  EXPECT_TRUE(state->is_canceled());
+  EXPECT_EQ((*state)(blackboard), "done");
+}
+
 TEST_F(TestYasminFactory, TestPythonStateParametersSurviveCppFactoryWrapping) {
   std::string xml_content = R"(
     <StateMachine outcomes="end">

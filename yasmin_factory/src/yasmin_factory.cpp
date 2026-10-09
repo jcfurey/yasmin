@@ -438,10 +438,13 @@ void PythonStateHolder::configure() {
 
 std::string
 PythonStateHolder::execute(yasmin::Blackboard::SharedPtr blackboard) {
-  return this->cpp_state_->execute(blackboard);
+  return (*this->cpp_state_)(blackboard);
 }
 
-void PythonStateHolder::cancel_state() { this->cpp_state_->cancel_state(); }
+void PythonStateHolder::cancel_state() {
+  yasmin::State::cancel_state();
+  this->cpp_state_->cancel_state();
+}
 
 std::string PythonStateHolder::to_string() const {
   return this->cpp_state_->to_string();

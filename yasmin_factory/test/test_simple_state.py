@@ -61,3 +61,12 @@ class TestParameterizedState(State):
     def execute(self, blackboard: Blackboard) -> str:
         blackboard["configured_sleep_ms"] = self.sleep_ms
         return "done"
+
+
+class LifecycleState(State):
+    def __init__(self):
+        super().__init__(["done", "stale_cancel"])
+
+    def execute(self, blackboard: Blackboard) -> str:
+        blackboard["inner_running"] = self.is_running()
+        return "stale_cancel" if self.is_canceled() else "done"
