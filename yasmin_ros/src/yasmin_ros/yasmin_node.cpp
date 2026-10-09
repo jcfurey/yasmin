@@ -17,9 +17,16 @@
 #include "yasmin_ros/ros_logs.hpp"
 
 #include <chrono>
+#include <fstream>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#if __has_include("rclcpp/version.h")
+#include "rclcpp/version.h"
+#endif
 
 using namespace yasmin_ros;
 
@@ -41,6 +48,55 @@ void release_instance(YasminNode::SharedPtr &instance) {
 std::mutex &get_yasmin_node_instance_mutex() {
   static std::mutex mutex;
   return mutex;
+}
+
+// Library code has no argc/argv; Linux exposes them in /proc/self/cmdline.
+std::vector<std::string> read_process_arguments() {
+  std::vector<std::string> arguments;
+  std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+  std::string argument;
+  while (std::getline(cmdline, argument, '\0')) {
+    arguments.push_back(argument);
+  }
+  return arguments;
+}
+
+// Like rclpy.init(), use the process arguments so --ros-args remappings and
+// parameters (namespace, use_sim_time, ...) apply to nodes created here.
+void init_default_context() {
+  const auto arguments = read_process_arguments();
+  std::vector<const char *> argv;
+  argv.reserve(arguments.size());
+  for (const auto &argument : arguments) {
+    argv.push_back(argument.c_str());
+  }
+  try {
+    rclcpp::init(static_cast<int>(argv.size()), argv.data());
+  } catch (const std::exception &error) {
+    RCLCPP_WARN(rclcpp::get_logger("yasmin_node"),
+                "Ignoring process arguments for rclcpp::init: %s",
+                error.what());
+    rclcpp::init(0, nullptr);
+  }
+}
+
+std::unique_ptr<rclcpp::Executor>
+make_executor(const rclcpp::Context::SharedPtr &context) {
+  if (context != rclcpp::contexts::get_global_default_context()) {
+    // Its ExecutorOptions constructor is stable across distributions.
+    rclcpp::ExecutorOptions options;
+    options.context = context;
+    return std::make_unique<rclcpp::executors::MultiThreadedExecutor>(options);
+  }
+#if __has_include("rclcpp/version.h")
+#if RCLCPP_VERSION_GTE(29, 1, 1) // Jazzy, Kilted and Rolling
+  return std::make_unique<rclcpp::experimental::executors::EventsExecutor>();
+#else // Humble, Iron and Jazzy
+  return std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+#endif
+#else // Foxy and Galactic
+  return std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+#endif
 }
 } // namespace
 
@@ -84,8 +140,14 @@ YasminNode::get_instance(const std::string &node_name,
     release_instance(instance);
   }
 
-  if (!rclcpp::ok()) {
-    rclcpp::init(0, nullptr);
+  const auto context = options.context();
+  if (context == rclcpp::contexts::get_global_default_context()) {
+    if (!rclcpp::ok()) {
+      init_default_context();
+    }
+  } else if (!rclcpp::ok(context)) {
+    throw std::invalid_argument(
+        "YasminNode options select a context that is not initialized");
   }
 
   if (instance == nullptr) {
@@ -106,21 +168,15 @@ YasminNode::YasminNode(const std::string &node_name,
                        const rclcpp::NodeOptions &options)
     : rclcpp::Node(node_name.empty() ? "yasmin_" + generateUUID() + "_node"
                                      : node_name,
-                   options) {
-  if (options.context() != rclcpp::contexts::get_global_default_context()) {
-    throw std::invalid_argument(
-        "YasminNode spins the default context; pass an application-owned "
-        "node to states to use another context");
-  }
-
-  // Add this node's base interface to the executor for multi-threaded
-  // execution.
-  this->executor.add_node(this->get_node_base_interface());
+                   options),
+      executor(make_executor(options.context())) {
+  // Add this node's base interface to the executor.
+  this->executor->add_node(this->get_node_base_interface());
 
   // Initialize the spin thread to run the executor asynchronously.
   this->spin_thread = std::make_unique<std::thread>([this]() {
     try {
-      this->executor.spin();
+      this->executor->spin();
     } catch (const std::exception &error) {
       RCLCPP_ERROR(this->get_logger(), "YasminNode executor failed: %s",
                    error.what());
@@ -142,11 +198,11 @@ void YasminNode::stop_executor() {
   // Executor::cancel() is lost if spin() has not started yet: spin() then
   // marks itself as spinning and blocks. Repeat until spin() has returned.
   while (!this->spin_finished.load()) {
-    this->executor.cancel();
+    this->executor->cancel();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   this->spin_thread->join();
-  this->executor.remove_node(this->get_node_base_interface());
+  this->executor->remove_node(this->get_node_base_interface());
 
   this->spin_thread.reset();
 }

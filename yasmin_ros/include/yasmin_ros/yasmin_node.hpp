@@ -50,9 +50,7 @@ protected:
    * @brief Initializes the node with the given name and options.
    *
    * @param node_name Node name; empty selects a unique random name.
-   * @param options Node options. They must use the default context, which the
-   * internal executor spins.
-   * @throws std::invalid_argument if the options select another context.
+   * @param options Node options, including the context the node belongs to.
    */
   YasminNode(const std::string &node_name, const rclcpp::NodeOptions &options);
 
@@ -72,6 +70,9 @@ public:
    * @brief Provides access to the singleton instance of YasminNode.
    *
    * This method ensures there is only one instance of YasminNode running.
+   * If rclcpp is not initialized, the default context is initialized with
+   * the process arguments (as rclpy.init() uses sys.argv), so `--ros-args`
+   * remappings and parameters apply to this node.
    *
    * @return A shared pointer to the singleton instance of YasminNode.
    */
@@ -83,10 +84,12 @@ public:
    * The name and options apply only if this call creates the node; an
    * existing instance is returned unchanged. A `__node` remapping passed on
    * the command line still takes precedence. An instance whose context has
-   * been shut down is replaced, as with get_instance().
+   * been shut down is replaced, as with get_instance(). The default context
+   * is initialized if needed; another context must already be initialized.
    *
    * @param node_name Node name; empty selects a unique random name.
-   * @param options Node options using the default context.
+   * @param options Node options, including the context.
+   * @throws std::invalid_argument if a non-default context is not initialized.
    * @return A shared pointer to the singleton instance of YasminNode.
    */
   static YasminNode::SharedPtr
@@ -104,17 +107,8 @@ private:
    */
   void stop_executor();
 
-  /// @brief Executor for managing multiple threads.
-#if __has_include("rclcpp/version.h")
-#include "rclcpp/version.h"
-#if RCLCPP_VERSION_GTE(29, 1, 1) // Jazzy, Kilted and Rolling
-  rclcpp::experimental::executors::EventsExecutor executor;
-#else // Humble, Iron and Jazzy
-  rclcpp::executors::MultiThreadedExecutor executor;
-#endif
-#else // Foxy and Galactic
-  rclcpp::executors::MultiThreadedExecutor executor;
-#endif
+  /// @brief Executor spinning this node in spin_thread.
+  std::unique_ptr<rclcpp::Executor> executor;
   /// @brief Thread for spinning the node.
   std::unique_ptr<std::thread> spin_thread;
   /// @brief Set when the executor's spin() has returned.

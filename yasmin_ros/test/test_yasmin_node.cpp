@@ -1,4 +1,4 @@
-// Copyright (C) 2026 Miguel Ángel González Santamarta
+// Copyright (C) 2026
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -55,13 +60,59 @@ TEST_F(TestYasminNode, NodeOptionsAreApplied) {
   EXPECT_EQ(node->get_clock()->get_clock_type(), RCL_ROS_TIME);
 }
 
-TEST_F(TestYasminNode, RejectsForeignContext) {
+TEST_F(TestYasminNode, CustomContextIsSpun) {
   auto context = std::make_shared<rclcpp::Context>();
   context->init(0, nullptr);
-  EXPECT_THROW(YasminNode::get_instance(
-                   "foreign", rclcpp::NodeOptions().context(context)),
-               std::invalid_argument);
+  auto node = YasminNode::get_instance(
+      "custom_context", rclcpp::NodeOptions().context(context));
+  EXPECT_EQ(node->get_node_base_interface()->get_context(), context);
+
+  std::atomic_bool fired{false};
+  auto timer = node->create_wall_timer(std::chrono::milliseconds(10),
+                                       [&fired]() { fired.store(true); });
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!fired.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(fired.load());
+  timer.reset();
+  node.reset();
+  YasminNode::destroy_instance();
   context->shutdown("test done");
+}
+
+TEST_F(TestYasminNode, RejectsUninitializedCustomContext) {
+  auto context = std::make_shared<rclcpp::Context>();
+  EXPECT_THROW(YasminNode::get_instance(
+                   "uninitialized", rclcpp::NodeOptions().context(context)),
+               std::invalid_argument);
+}
+
+namespace {
+std::string self_path;
+} // namespace
+
+// Runs in a child process started with --ros-args by the test below.
+TEST(TestYasminNodeAutoInit, ChildUsesProcessArguments) {
+  if (std::getenv("YASMIN_NODE_TEST_CHILD") == nullptr) {
+    GTEST_SKIP() << "Runs only as the child of AutoInitUsesProcessArguments";
+  }
+  ASSERT_FALSE(rclcpp::ok());
+  auto node = YasminNode::get_instance();
+  EXPECT_STREQ(node->get_namespace(), "/cmdline_ns");
+  EXPECT_TRUE(node->get_parameter("use_sim_time").as_bool());
+  node.reset();
+  YasminNode::destroy_instance();
+  rclcpp::shutdown();
+}
+
+TEST(TestYasminNodeAutoInit, AutoInitUsesProcessArguments) {
+  const std::string command =
+      "YASMIN_NODE_TEST_CHILD=1 '" + self_path +
+      "' --gtest_filter=TestYasminNodeAutoInit.ChildUsesProcessArguments "
+      "--ros-args -r __ns:=/cmdline_ns -p use_sim_time:=true";
+  EXPECT_EQ(std::system(command.c_str()), 0);
 }
 
 TEST_F(TestYasminNode, ShutdownContextGetsNewNode) {
@@ -75,6 +126,7 @@ TEST_F(TestYasminNode, ShutdownContextGetsNewNode) {
 }
 
 int main(int argc, char **argv) {
+  self_path = argv[0];
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
