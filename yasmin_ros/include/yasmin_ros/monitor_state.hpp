@@ -20,6 +20,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -162,45 +163,31 @@ public:
   std::string execute(yasmin::Blackboard::SharedPtr blackboard) override {
     int retry_count = 0;
     std::unique_lock<std::mutex> lock(this->msg_mutex);
-    std::cv_status wait_status = std::cv_status::no_timeout;
+    const auto ready = [this]() {
+      return !this->msg_list.empty() || this->is_canceled();
+    };
 
-    while (this->msg_list.empty()) {
-
+    while (!ready()) {
       if (this->timeout > 0) {
-        const auto timeout_dur = std::chrono::seconds(this->timeout);
-        wait_status = this->msg_cond.wait_for(lock, timeout_dur);
-      } else {
-        this->msg_cond.wait(lock, [this]() {
-          return !this->msg_list.empty() || this->is_canceled();
-        });
-      }
-
-      if (this->is_canceled()) {
-        return basic_outcomes::CANCEL;
-      }
-
-      while (this->timeout > 0 && wait_status == std::cv_status::timeout) {
-        YASMIN_LOG_WARN("Timeout reached, topic '%s' is not available",
-                        this->topic_name.c_str());
-
-        if (retry_count < this->maximum_retry) {
-          retry_count++;
+        if (!this->msg_cond.wait_for(lock, std::chrono::seconds(this->timeout),
+                                     ready)) {
+          YASMIN_LOG_WARN("Timeout reached, topic '%s' is not available",
+                          this->topic_name.c_str());
+          if (retry_count >= this->maximum_retry) {
+            return basic_outcomes::TIMEOUT;
+          }
+          ++retry_count;
           YASMIN_LOG_WARN("Retrying to wait for topic '%s' (%d/%d)",
                           this->topic_name.c_str(), retry_count,
                           this->maximum_retry);
-          const auto timeout_dur = std::chrono::seconds(this->timeout);
-          wait_status = this->msg_cond.wait_for(lock, timeout_dur);
-        } else {
-          if (this->is_canceled()) {
-            return basic_outcomes::CANCEL;
-          }
-          return basic_outcomes::TIMEOUT;
         }
-
-        if (this->is_canceled()) {
-          return basic_outcomes::CANCEL;
-        }
+      } else {
+        this->msg_cond.wait(lock, ready);
       }
+    }
+
+    if (this->is_canceled()) {
+      return basic_outcomes::CANCEL;
     }
 
     auto msg = this->msg_list.front();
@@ -217,8 +204,11 @@ public:
    * This function cancels the ongoing monitor.
    */
   void cancel_state() override {
-    yasmin::State::cancel_state();
-    this->msg_cond.notify_one();
+    {
+      std::lock_guard<std::mutex> lock(this->msg_mutex);
+      yasmin::State::cancel_state();
+    }
+    this->msg_cond.notify_all();
   }
 
 protected:

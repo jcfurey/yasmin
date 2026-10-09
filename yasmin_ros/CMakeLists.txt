@@ -178,6 +178,7 @@ if(BUILD_TESTING)
     test_publisher_state
     test_tf_buffer_state
     test_complex_scenarios
+    test_client_cleanup
   )
 
   foreach(_test_name ${_gtest_tests})

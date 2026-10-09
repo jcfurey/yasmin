@@ -15,6 +15,7 @@
 #ifndef YASMIN_ROS__SERVICE_STATE_HPP_
 #define YASMIN_ROS__SERVICE_STATE_HPP_
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -264,7 +265,6 @@ public:
    * ABORT, or TIMEOUT.
    */
   std::string execute(yasmin::Blackboard::SharedPtr blackboard) override {
-    std::unique_lock<std::mutex> lock(this->response_done_mutex);
     int retry_count = 0;
 
     // Wait for the service to become available
@@ -277,7 +277,8 @@ public:
 
     while (!this->service_client->wait_for_service(wait_slice)) {
 
-      if (this->is_canceled()) {
+      if (this->is_canceled() ||
+          !rclcpp::ok(this->node_->get_node_base_interface()->get_context())) {
         return basic_outcomes::CANCEL;
       }
 
@@ -305,7 +306,15 @@ public:
       }
     }
 
+    if (this->is_canceled()) {
+      return basic_outcomes::CANCEL;
+    }
     Request request = this->create_request(blackboard);
+
+    std::unique_lock<std::mutex> lock(this->response_done_mutex);
+    if (this->is_canceled()) {
+      return basic_outcomes::CANCEL;
+    }
 
     // Send the service request
     YASMIN_LOG_INFO("Sending request to service '%s'", this->srv_name.c_str());
@@ -314,7 +323,7 @@ public:
     this->service_response = nullptr; // Reset previous response
     const uint64_t epoch = ++this->response_epoch_;
     auto callback_guard = this->callback_guard;
-    this->service_client->async_send_request(
+    auto pending = this->service_client->async_send_request(
         std::move(request),
         [this, callback_guard,
          epoch](typename rclcpp::Client<ServiceT>::SharedFuture response) {
@@ -324,8 +333,10 @@ public:
           }
         });
 
-    // Reset retry_count for the response-wait phase
-    retry_count = 0;
+    // Remove only this invocation's request on every exit, including
+    // exceptions.
+    PendingRequestCleanup<decltype(pending)> cleanup{this->service_client,
+                                                     pending};
 
     // Wait for response with timeout
     if (this->response_timeout > 0) {
@@ -350,11 +361,12 @@ public:
       return basic_outcomes::CANCEL;
     }
 
-    // Process the service response
-    if (this->service_response) {
+    // User handlers may cancel the state; invoke them outside the wait mutex.
+    const auto response = this->service_response;
+    lock.unlock();
+    if (response) {
       if (response_handler != nullptr) {
-        std::string outcome =
-            this->response_handler(blackboard, this->service_response);
+        std::string outcome = this->response_handler(blackboard, response);
         return outcome;
       }
       return basic_outcomes::SUCCEED;
@@ -367,7 +379,10 @@ public:
    * @brief Cancel the current service state.
    */
   void cancel_state() override {
-    yasmin::State::cancel_state();
+    {
+      std::lock_guard<std::mutex> lock(this->response_done_mutex);
+      yasmin::State::cancel_state();
+    }
     this->response_done_cond.notify_all();
   }
 
@@ -376,6 +391,25 @@ protected:
   rclcpp::Node::SharedPtr node_;
 
 private:
+  // Older rclcpp (notably Foxy) has no public pending-request removal API.
+  // Feature detection keeps those headers compilable; cleanup is available
+  // when the client exposes remove_pending_request for its returned future.
+  template <typename ClientT, typename PendingT>
+  static auto remove_pending_request(ClientT &client, const PendingT &pending,
+                                     int)
+      -> decltype(client.remove_pending_request(pending), void()) {
+    client.remove_pending_request(pending);
+  }
+
+  template <typename ClientT, typename PendingT>
+  static void remove_pending_request(ClientT &, const PendingT &, long) {}
+
+  template <typename PendingT> struct PendingRequestCleanup {
+    std::shared_ptr<rclcpp::Client<ServiceT>> client;
+    const PendingT &pending;
+    ~PendingRequestCleanup() { remove_pending_request(*client, pending, 0); }
+  };
+
   /// @brief Guard disabling callbacks after the state is destroyed.
   struct CallbackGuard {
     std::mutex mutex;
