@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from threading import Event
+from time import monotonic
 from typing import Callable, Optional, Set
 
 from rclpy.node import Node
@@ -61,3 +62,24 @@ def wait_with_retry(
         else:
             return TIMEOUT
     return None
+
+
+def wait_for_server_with_retry(
+    wait_fn: Callable[[float], bool],
+    timeout: Optional[float],
+    max_retry: int,
+    log_msg: str,
+    cancel_check: Callable[[], bool],
+) -> Optional[str]:
+    """Wait in short slices, preserving the timeout budget for each retry."""
+    def attempt():
+        deadline = None if timeout is None else monotonic() + max(0.0, timeout)
+        while not cancel_check():
+            remaining = None if deadline is None else max(0.0, deadline - monotonic())
+            if wait_fn(0.1 if remaining is None else min(0.1, remaining)):
+                return True
+            if deadline is not None and monotonic() >= deadline:
+                return False
+        return False
+
+    return wait_with_retry(attempt, max_retry, log_msg, cancel_check)

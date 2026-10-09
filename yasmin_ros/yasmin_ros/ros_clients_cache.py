@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from threading import RLock
+from weakref import ref
 from typing import Any, Dict, Tuple, Type, Union
 
 from rclpy.node import Node
@@ -35,7 +36,7 @@ class ROSClientsCache:
     creation of client objects.
 
     The cache is organized by client type and uses unique keys based on:
-    - Node name
+    - Owning node instance
     - Message/Service/Action type
     - Topic/Service/Action name
     - Callback group name
@@ -103,7 +104,7 @@ class ROSClientsCache:
         Returns:
             ActionClient: The cached or newly created action client.
         """
-        node_name = node.get_name()
+        node_name = ref(node)
         action_type_name = f"{action_type.__module__}.{action_type.__name__}"
         callback_group_name = cls._get_callback_group_name(callback_group)
         cache_key = (node_name, action_type_name, action_name, callback_group_name)
@@ -136,7 +137,7 @@ class ROSClientsCache:
         Returns:
             Client: The cached or newly created service client.
         """
-        node_name = node.get_name()
+        node_name = ref(node)
         service_type_name = f"{service_type.__module__}.{service_type.__name__}"
         callback_group_name = cls._get_callback_group_name(callback_group)
         cache_key = (node_name, service_type_name, service_name, callback_group_name)
@@ -171,7 +172,7 @@ class ROSClientsCache:
         Returns:
             Publisher: The cached or newly created publisher.
         """
-        node_name = node.get_name()
+        node_name = ref(node)
         msg_type_name = f"{msg_type.__module__}.{msg_type.__name__}"
         qos_hash = str(cls._hash_qos_profile(qos_profile))
         callback_group_name = cls._get_callback_group_name(callback_group)
@@ -222,6 +223,15 @@ class ROSClientsCache:
             cls._service_clients.clear()
             cls._publishers.clear()
             yasmin.YASMIN_LOG_INFO("All ROS clients caches cleared")
+
+    @classmethod
+    def clear_for_node(cls, node: Node) -> None:
+        """Release cache entries when their owning node is destroyed."""
+        with cls._lock:
+            for cache in (cls._action_clients, cls._service_clients, cls._publishers):
+                for key in list(cache):
+                    if key[0]() is node or key[0]() is None:
+                        del cache[key]
 
     @classmethod
     def get_action_clients_count(cls) -> int:

@@ -41,7 +41,7 @@ namespace yasmin_ros {
  * avoiding duplicate creation of client objects.
  *
  * The cache is organized by client type and uses unique keys based on:
- * - Node name
+ * - Owning node instance
  * - Message/Service/Action type
  * - Topic/Service/Action name
  * - Callback group name
@@ -67,7 +67,7 @@ public:
       const rclcpp::CallbackGroup::SharedPtr &callback_group = nullptr) {
 
     // Create a unique key
-    std::string node_name = node->get_name();
+    std::string node_name = get_node_key(node);
     std::string action_type_name = get_type_name<ActionT>();
     std::string callback_group_name = get_callback_group_name(callback_group);
     auto cache_key =
@@ -116,7 +116,7 @@ public:
       const rclcpp::CallbackGroup::SharedPtr &callback_group = nullptr) {
 
     // Create a unique key
-    std::string node_name = node->get_name();
+    std::string node_name = get_node_key(node);
     std::string service_type_name = get_type_name<ServiceT>();
     std::string callback_group_name = get_callback_group_name(callback_group);
     auto cache_key =
@@ -177,7 +177,7 @@ public:
       const rclcpp::CallbackGroup::SharedPtr &callback_group = nullptr) {
 
     // Create a unique key
-    std::string node_name = node->get_name();
+    std::string node_name = get_node_key(node);
     std::string msg_type_name = get_type_name<MsgT>();
     std::string qos_hash = hash_qos_profile(qos_profile);
     std::string callback_group_name = get_callback_group_name(callback_group);
@@ -233,6 +233,9 @@ public:
    */
   static void clear_all();
 
+  /** @brief Remove cached endpoints belonging to one node. */
+  static void clear_for_node(const rclcpp::Node::SharedPtr &node);
+
   /**
    * @brief Get the number of cached action clients.
    *
@@ -262,6 +265,8 @@ public:
   static std::map<std::string, size_t> get_cache_stats();
 
 private:
+  static std::string get_node_key(const rclcpp::Node::SharedPtr &node);
+  static void erase_node_key(const std::string &key);
   // Type alias for cache keys
   using ActionClientKey = std::tuple<std::string, std::string, std::string,
                                      std::string, std::type_index>;

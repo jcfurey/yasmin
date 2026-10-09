@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "yasmin_ros/yasmin_node.hpp"
+#include "yasmin_ros/ros_clients_cache.hpp"
 #include "yasmin_ros/ros_logs.hpp"
 
 #include <random>
@@ -73,6 +74,9 @@ void YasminNode::destroy_instance() {
   std::lock_guard<std::mutex> lock(get_yasmin_node_instance_mutex());
   auto &instance = get_yasmin_node_instance();
   reset_logger_node(instance.get());
+  if (instance) {
+    ROSClientsCache::clear_for_node(instance);
+  }
   instance.reset();
 }
 

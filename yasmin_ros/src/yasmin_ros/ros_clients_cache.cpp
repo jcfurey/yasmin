@@ -18,6 +18,52 @@
 
 namespace yasmin_ros {
 
+std::string ROSClientsCache::get_node_key(const rclcpp::Node::SharedPtr &node) {
+  if (!node) {
+    throw std::invalid_argument("ROS client owner node cannot be null");
+  }
+  static std::mutex owners_mutex;
+  static std::map<std::weak_ptr<rclcpp::Node>, std::string,
+                  std::owner_less<std::weak_ptr<rclcpp::Node>>>
+      owners;
+  static std::uint64_t next_id = 0;
+  std::lock_guard<std::mutex> lock(owners_mutex);
+  for (auto it = owners.begin(); it != owners.end();) {
+    if (it->first.expired()) {
+      erase_node_key(it->second);
+      it = owners.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  auto [it, inserted] = owners.try_emplace(node);
+  if (inserted) {
+    it->second = std::to_string(++next_id);
+  }
+  return it->second;
+}
+
+void ROSClientsCache::erase_node_key(const std::string &key) {
+  std::scoped_lock lock(get_action_lock(), get_service_lock(),
+                        get_publisher_lock());
+  const auto erase = [&key](auto &cache) {
+    for (auto it = cache.begin(); it != cache.end();) {
+      if (std::get<0>(it->first) == key) {
+        it = cache.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  };
+  erase(get_action_clients());
+  erase(get_service_clients());
+  erase(get_publishers());
+}
+
+void ROSClientsCache::clear_for_node(const rclcpp::Node::SharedPtr &node) {
+  erase_node_key(get_node_key(node));
+}
+
 // Static member function definitions for cache access
 std::map<ROSClientsCache::ActionClientKey, std::shared_ptr<void>> &
 ROSClientsCache::get_action_clients() {

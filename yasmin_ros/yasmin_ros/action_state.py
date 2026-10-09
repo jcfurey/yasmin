@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass, field
 from threading import RLock, Event
 from typing import Set, Callable, Type, Any
 
@@ -26,7 +27,18 @@ import yasmin
 from yasmin import State, Blackboard
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL, TIMEOUT
 from yasmin_ros.ros_clients_cache import ROSClientsCache
-from yasmin_ros.ros_state_utils import resolve_node, wait_with_retry, setup_outcomes
+from yasmin_ros.ros_state_utils import (
+    resolve_node, wait_with_retry, wait_for_server_with_retry, setup_outcomes,
+)
+
+
+@dataclass
+class _ActionExecution:
+    done: Event = field(default_factory=Event)
+    result: Any = None
+    status: int = GoalStatus.STATUS_UNKNOWN
+    goal_handle: Any = None
+    cancel_requested: bool = False
 
 
 class ActionState(State):
@@ -75,18 +87,8 @@ class ActionState(State):
             ValueError: If create_goal_handler is None.
         """
 
-        ## Event used to wait for action completion.
-        self._action_done_event: Event = Event()
-        ## Shared pointer to the action result.
-        self._action_result: Any = None
-        ## Status of the action execution.
-        self._action_status: GoalStatus = None
-        ## Handle for the current goal.
-        self._goal_handle: ClientGoalHandle = None
-        ## Lock to manage access to the goal handle.
-        self._goal_handle_lock: RLock = RLock()
-        ## Whether a cancel was requested before the goal handle was received.
-        self._cancel_requested: bool = False
+        self._goal_handle_lock = RLock()
+        self._execution = None
 
         ## Handler function for creating goals.
         self._create_goal_handler: Callable[[Blackboard], Any] = create_goal_handler
@@ -133,25 +135,28 @@ class ActionState(State):
 
         super().__init__(outcomes)
 
-    def _cancel_goal(self, wait: bool = True) -> None:
+    def _cancel_goal(self, execution=None) -> None:
         with self._goal_handle_lock:
-            self._cancel_requested = True
-            goal_handle = self._goal_handle
-
+            execution = execution or self._execution
+            if execution is None:
+                return
+            execution.cancel_requested = True
+            goal_handle = execution.goal_handle
         if goal_handle is not None:
-            cancel_future = goal_handle.cancel_goal_async()
-            if wait:
-                cancel_future.result()
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception as error:
+                yasmin.YASMIN_LOG_WARN(f"Failed to cancel action '{self._action_name}': {error}")
 
     def cancel_state(self) -> None:
-        """
-        Cancel the current action state.
-
-        This function cancels the goal sent to the action server, if it exists,
-        and waits for the cancellation to complete.
-        """
-        self._cancel_goal()
-        super().cancel_state()
+        """Wake the local wait immediately and request remote cancellation."""
+        with self._goal_handle_lock:
+            super().cancel_state()
+            execution = self._execution
+            if execution is not None:
+                execution.cancel_requested = True
+                execution.done.set()
+        self._cancel_goal(execution)
 
     def execute(self, blackboard: Blackboard) -> str:
         """
@@ -168,42 +173,41 @@ class ActionState(State):
                 Possible outcomes include SUCCEED, ABORT, CANCEL, or TIMEOUT.
         """
         goal = self._create_goal_handler(blackboard)
-        retry_count = 0
 
         yasmin.YASMIN_LOG_INFO(f"Waiting for action '{self._action_name}'")
 
-        outcome = wait_with_retry(
-            lambda: self._action_client.wait_for_server(self._wait_timeout),
+        outcome = wait_for_server_with_retry(
+            self._action_client.wait_for_server,
+            self._wait_timeout,
             self._maximum_retry,
             f"Timeout reached, action '{self._action_name}' is not available",
-            cancel_check=self.is_canceled,
+            cancel_check=lambda: self.is_canceled() or not self._node.context.ok(),
         )
         if outcome is not None:
             return outcome
 
-        if self.is_canceled():
-            return CANCEL
-
-        self._action_done_event.clear()
-        self._action_result = None
-        self._action_status = None
         with self._goal_handle_lock:
-            self._goal_handle = None
-            self._cancel_requested = False
+            if self.is_canceled():
+                return CANCEL
+            execution = _ActionExecution()
+            self._execution = execution
 
         yasmin.YASMIN_LOG_INFO(f"Sending goal to action '{self._action_name}'")
 
         def feedback_handler(feedback):
-            if self._feedback_handler is not None:
+            if (self._execution is execution and not execution.cancel_requested
+                    and self._feedback_handler is not None):
                 self._feedback_handler(blackboard, feedback.feedback)
 
         send_goal_future = self._action_client.send_goal_async(
             goal, feedback_callback=feedback_handler
         )
-        send_goal_future.add_done_callback(self._goal_response_callback)
+        send_goal_future.add_done_callback(
+            lambda future: self._goal_response_callback(future, execution)
+        )
 
         outcome = wait_with_retry(
-            lambda: self._action_done_event.wait(self._response_timeout),
+            lambda: execution.done.wait(self._response_timeout),
             self._maximum_retry,
             f"Timeout reached while waiting for response from "
             f"action '{self._action_name}'",
@@ -211,13 +215,13 @@ class ActionState(State):
         )
         if outcome is not None:
             if outcome == TIMEOUT:
-                self._cancel_goal(wait=False)
+                self._cancel_goal(execution)
             return outcome
 
         if self.is_canceled():
             return CANCEL
 
-        status = self._action_status
+        status = execution.status
 
         if status == GoalStatus.STATUS_CANCELED:
             return CANCEL
@@ -227,59 +231,49 @@ class ActionState(State):
 
         elif status == GoalStatus.STATUS_SUCCEEDED:
             if self._result_handler is not None:
-                return self._result_handler(blackboard, self._action_result)
+                return self._result_handler(blackboard, execution.result)
 
             return SUCCEED
 
         return ABORT
 
-    def _goal_response_callback(self, future: Future) -> None:
-        """
-        Callback for handling the goal response.
-
-        This method retrieves the goal handle and sets up the result callback.
-
-        Args:
-            future: The future object representing the result of the goal sending operation.
-        """
-
+    def _goal_response_callback(self, future: Future, execution: _ActionExecution) -> None:
         try:
-            goal_handle: ClientGoalHandle = future.result()
-
+            goal_handle = future.result()
             with self._goal_handle_lock:
-                self._goal_handle = goal_handle
-
-            if self._cancel_requested and goal_handle is not None:
-                goal_handle.cancel_goal_async()
-
-            get_result_future: Future = goal_handle.get_result_async()
-            get_result_future.add_done_callback(self._get_result_callback)
-        except Exception as e:
-            yasmin.YASMIN_LOG_ERROR(
-                f"Failed to handle goal response for action "
-                f"'{self._action_name}': {e}"
+                execution.goal_handle = goal_handle
+                stale = self._execution is not execution
+                cancel = execution.cancel_requested or stale or self.is_canceled()
+            if goal_handle is None or not goal_handle.accepted:
+                execution.status = GoalStatus.STATUS_ABORTED
+                execution.done.set()
+                return
+            if cancel:
+                self._cancel_goal(execution)
+            if stale:
+                return
+            goal_handle.get_result_async().add_done_callback(
+                lambda result: self._get_result_callback(result, execution)
             )
-            self._action_status = GoalStatus.STATUS_UNKNOWN
-            self._action_done_event.set()
+        except Exception as error:
+            yasmin.YASMIN_LOG_ERROR(
+                f"Failed to handle goal response for action '{self._action_name}': {error}"
+            )
+            execution.status = GoalStatus.STATUS_UNKNOWN
+            execution.done.set()
 
-    def _get_result_callback(self, future: Future) -> None:
-        """
-        Callback for handling the result of the executed action.
-
-        This method sets the action result and status, and signals that the action is done.
-
-        Args:
-            future: The future object representing the result of the action execution.
-        """
+    def _get_result_callback(self, future: Future, execution: _ActionExecution) -> None:
+        # Each invocation owns its event and result. Late callbacks can only
+        # finish their own invocation, including after a timeout and reuse.
         try:
             result = future.result()
-            self._action_result: Any = result.result
-            self._action_status: GoalStatus = result.status
-        except Exception as e:
+            execution.result = result.result
+            execution.status = result.status
+        except Exception as error:
             yasmin.YASMIN_LOG_ERROR(
-                f"Failed to handle result for action '{self._action_name}': {e}"
+                f"Failed to handle result for action '{self._action_name}': {error}"
             )
-            self._action_result = None
-            self._action_status = GoalStatus.STATUS_UNKNOWN
+            execution.result = None
+            execution.status = GoalStatus.STATUS_UNKNOWN
         finally:
-            self._action_done_event.set()
+            execution.done.set()

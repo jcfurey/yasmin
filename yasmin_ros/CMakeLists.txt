@@ -164,6 +164,7 @@ if(BUILD_TESTING)
     test_ros_deserialize_state
     test_tf_buffer_state
     test_complex_scenarios
+    test_client_cancellation
   )
 
   foreach(_test_name ${_pytest_tests})

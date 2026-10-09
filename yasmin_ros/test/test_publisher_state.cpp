@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <example_interfaces/action/fibonacci.hpp>
+#include <example_interfaces/srv/add_two_ints.hpp>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -54,6 +56,48 @@ TEST_F(TestPublisherState, TestPublisher) {
       });
 
   EXPECT_EQ((*state)(blackboard), std::string(SUCCEED));
+}
+
+TEST_F(TestPublisherState, CacheSeparatesNodeOwnersAndNamespaces) {
+  ROSClientsCache::clear_all();
+  auto first = std::make_shared<rclcpp::Node>("owner", "/robot1");
+  auto second = std::make_shared<rclcpp::Node>("owner", "/robot2");
+  auto duplicate_name = std::make_shared<rclcpp::Node>("owner", "/robot1");
+  using Message = std_msgs::msg::String;
+  using Service = example_interfaces::srv::AddTwoInts;
+  using Action = example_interfaces::action::Fibonacci;
+  auto publisher =
+      ROSClientsCache::get_or_create_publisher<Message>(first, "cloud");
+  EXPECT_EQ(publisher,
+            ROSClientsCache::get_or_create_publisher<Message>(first, "cloud"));
+  auto other =
+      ROSClientsCache::get_or_create_publisher<Message>(second, "cloud");
+  EXPECT_NE(publisher, other);
+  EXPECT_STREQ(publisher->get_topic_name(), "/robot1/cloud");
+  EXPECT_STREQ(other->get_topic_name(), "/robot2/cloud");
+  EXPECT_NE(publisher, ROSClientsCache::get_or_create_publisher<Message>(
+                           duplicate_name, "cloud"));
+  auto service =
+      ROSClientsCache::get_or_create_service_client<Service>(first, "request");
+  EXPECT_EQ(service, ROSClientsCache::get_or_create_service_client<Service>(
+                         first, "request"));
+  EXPECT_NE(service, ROSClientsCache::get_or_create_service_client<Service>(
+                         second, "request"));
+  EXPECT_NE(service, ROSClientsCache::get_or_create_service_client<Service>(
+                         duplicate_name, "request"));
+  auto action =
+      ROSClientsCache::get_or_create_action_client<Action>(first, "goal");
+  EXPECT_EQ(action, ROSClientsCache::get_or_create_action_client<Action>(
+                        first, "goal"));
+  EXPECT_NE(action, ROSClientsCache::get_or_create_action_client<Action>(
+                        second, "goal"));
+  EXPECT_NE(action, ROSClientsCache::get_or_create_action_client<Action>(
+                        duplicate_name, "goal"));
+  ROSClientsCache::clear_for_node(first);
+  EXPECT_EQ(ROSClientsCache::get_cache_stats().at("total"), 6U);
+  EXPECT_NE(publisher,
+            ROSClientsCache::get_or_create_publisher<Message>(first, "cloud"));
+  ROSClientsCache::clear_all();
 }
 
 TEST_F(TestPublisherState, TestPublisherCache) {

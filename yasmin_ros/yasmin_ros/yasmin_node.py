@@ -70,6 +70,9 @@ class YasminNode(Node):
         """
         with YasminNode._lock:
             if YasminNode._instance is not None:
+                from yasmin_ros.ros_clients_cache import ROSClientsCache
+
+                ROSClientsCache.clear_for_node(YasminNode._instance)
                 if yasmin_ros.logger_node is YasminNode._instance:
                     yasmin_ros.logger_node = None
                 if rclpy.ok():

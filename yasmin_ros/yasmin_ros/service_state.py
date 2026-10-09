@@ -27,6 +27,7 @@ from yasmin_ros.ros_clients_cache import ROSClientsCache
 from yasmin_ros.ros_state_utils import (
     resolve_node,
     wait_with_retry,
+    wait_for_server_with_retry,
     setup_outcomes,
     cancel_with_event,
 )
@@ -139,11 +140,12 @@ class ServiceState(State):
 
         yasmin.YASMIN_LOG_INFO(f"Waiting for service '{self._srv_name}'")
 
-        outcome = wait_with_retry(
-            lambda: self._service_client.wait_for_service(timeout_sec=self._wait_timeout),
+        outcome = wait_for_server_with_retry(
+            lambda timeout: self._service_client.wait_for_service(timeout_sec=timeout),
+            self._wait_timeout,
             self._maximum_retry,
             f"Timeout reached, service '{self._srv_name}' is not available",
-            cancel_check=self.is_canceled,
+            cancel_check=lambda: self.is_canceled() or not self._node.context.ok(),
         )
         if outcome is not None:
             return outcome
