@@ -132,9 +132,10 @@ def runtime_button_states(
             and not runtime_state.finished
             and not runtime_state.shell_execution_blocked,
         ),
+        # While paused no state executes, so there is nothing to cancel.
         "runtime_cancel_state_button": RuntimeButtonState(
             visible=runtime_state.running and not runtime_state.finished,
-            enabled=runtime_state.running and not runtime_state.finished,
+            enabled=runtime_state.playing and not runtime_state.finished,
         ),
         "runtime_cancel_sm_button": RuntimeButtonState(
             visible=runtime_state.running and not runtime_state.finished,

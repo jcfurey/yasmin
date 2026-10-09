@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, List, Optional, Union
+from collections import deque
+from typing import Any, Callable, Deque, List, Optional, Union
 
 import yasmin
 
@@ -32,6 +33,11 @@ LOG_LEVEL_BY_NAME = {
     "INFO": yasmin.LogLevel.INFO,
     "DEBUG": yasmin.LogLevel.DEBUG,
 }
+
+
+# Upper bound for retained runtime log lines; long-running or looping machines
+# would otherwise grow the buffer (and the log view) without limit.
+MAX_LOG_ENTRIES = 5000
 
 
 class RuntimeLogger:
@@ -59,7 +65,7 @@ class RuntimeLogger:
         self._clear_callback = clear_callback
         self._is_disposed = is_disposed
 
-        self._log_entries: List[str] = []
+        self._log_entries: Deque[str] = deque(maxlen=MAX_LOG_ENTRIES)
         self._log_buffer_lock = threading.Lock()
         self._last_log_message = ""
         self._last_log_timestamp = 0.0

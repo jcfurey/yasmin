@@ -104,6 +104,10 @@ def _palette_value(name: str) -> str:
     return getattr(_ACTIVE_PALETTE, name).name()
 
 
+# Maximum number of lines kept in the runtime log view (oldest are dropped).
+RUNTIME_LOG_VIEW_MAX_BLOCKS = 5000
+
+
 def runtime_status_badge_colors(status: str):
     """Return background, foreground, and border colors for a status badge."""
     normalized = str(status).strip().lower()

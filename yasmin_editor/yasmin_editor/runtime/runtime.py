@@ -78,6 +78,8 @@ class Runtime(QtCore.QObject):
         self._worker_state_lock = threading.Lock()
         self._pause_condition = threading.Condition()
         self._pause_requested = False
+        self._cancel_requested = False
+        self._cancel_threads: List[threading.Thread] = []
 
         self._step_mode = False
         self._breakpoint_lock = threading.Lock()
@@ -207,6 +209,7 @@ class Runtime(QtCore.QObject):
             self._current_state_ref = None
             self._last_state_ref = None
         self._pause_requested = False
+        self._cancel_requested = False
         self._shutting_down = False
         self._step_mode = False
         self.logger.reset_depth()
@@ -270,24 +273,34 @@ class Runtime(QtCore.QObject):
     def cancel_state(self) -> None:
         """Request cancellation of the currently active state.
 
-        Called from the GUI thread. The underlying YASMIN ``cancel_state``
-        method is assumed to be thread-safe, so no additional synchronization
-        is added here.
+        Called from the GUI thread. YASMIN's ``cancel_state`` waits until the
+        machine reports a current state. While the runtime is paused the worker
+        sits in a container callback between two states, so that wait cannot
+        finish before execution resumes; nothing is executing, so nothing is
+        canceled. When running, the request is issued from a helper thread so a
+        blocking YASMIN call never freezes the GUI thread.
         """
         if not self.is_ready() or self.is_finished() or self._disposed:
             return
-        try:
-            self.sm.cancel_state()
-            self.status_changed.emit("Canceling current state")
-        except Exception as exc:
-            self.error_occurred.emit(f"Failed to cancel current state:\n{exc}")
+        if self.is_blocked():
+            self.status_changed.emit(
+                "No state is executing while paused; resume before canceling a state"
+            )
+            return
+
+        self._run_cancel_request(
+            "cancel-state",
+            self.sm.cancel_state,
+            "Failed to cancel current state",
+        )
+        self.status_changed.emit("Canceling current state")
 
     def cancel_state_machine(self) -> None:
         """Request cancellation of the complete runtime state machine.
 
-        Called from the GUI thread. The underlying YASMIN
-        ``cancel_state_machine`` method is assumed to be thread-safe, so no
-        additional synchronization is added here.
+        Called from the GUI thread. The YASMIN request is issued from a helper
+        thread; afterwards a paused worker is released so the cancellation can
+        take effect instead of leaving the runtime paused forever.
         """
         if (
             not self.is_ready()
@@ -297,11 +310,55 @@ class Runtime(QtCore.QObject):
         ):
             return
 
-        try:
-            self.sm.cancel_state_machine()
-            self.status_changed.emit("Canceling runtime state machine")
-        except Exception as exc:
-            self.error_occurred.emit(f"Failed to cancel runtime state machine:\n{exc}")
+        with self._pause_condition:
+            self._cancel_requested = True
+
+        self._run_cancel_request(
+            "cancel-sm",
+            self.sm.cancel_state_machine,
+            "Failed to cancel runtime state machine",
+            on_done=self._release_pause_for_cancel,
+        )
+        self.status_changed.emit("Canceling runtime state machine")
+
+    def _release_pause_for_cancel(self) -> None:
+        """Wake a paused worker and disable further pauses after a cancel."""
+        with self._pause_condition:
+            self._cancel_requested = True
+            self._pause_requested = False
+            self._step_mode = False
+            self._pause_status_message = None
+            self._pause_condition.notify_all()
+
+    def _run_cancel_request(
+        self,
+        name: str,
+        request: Any,
+        error_prefix: str,
+        on_done: Optional[Any] = None,
+    ) -> threading.Thread:
+        """Run one (potentially blocking) YASMIN cancel call off the GUI thread."""
+
+        def run() -> None:
+            try:
+                request()
+            except Exception as exc:
+                if not self._disposed:
+                    self.error_occurred.emit(f"{error_prefix}:\n{exc}")
+            finally:
+                if on_done is not None:
+                    on_done()
+
+        thread = threading.Thread(
+            target=run,
+            name=f"yasmin-runtime-{name}",
+            daemon=True,
+        )
+        self._cancel_threads = [
+            item for item in self._cancel_threads if item.is_alive()
+        ] + [thread]
+        thread.start()
+        return thread
 
     def shutdown(self, reset_disposed: bool = True) -> None:
         """Tear down the runtime and optionally mark it as disposed."""
@@ -312,6 +369,7 @@ class Runtime(QtCore.QObject):
         self._disposed = True
 
         with self._pause_condition:
+            self._cancel_requested = True
             self._pause_requested = False
             self._step_mode = False
             self._pause_condition.notify_all()
@@ -447,10 +505,9 @@ class Runtime(QtCore.QObject):
             self._pause_requested = False
             self._pause_status_message = None
             self._pause_condition.notify_all()
-        with self._worker_state_lock:
-            if self._blocked:
-                self._blocked = False
-                self.blocked_changed.emit(False)
+        # Emit outside the worker-state lock: the GUI slot reads runtime state
+        # (taking the same non-reentrant lock) synchronously on this thread.
+        self._set_blocked(False)
 
     def _set_running(self, value: bool) -> None:
         """Update the running flag and emit the corresponding signal."""
@@ -527,14 +584,18 @@ class Runtime(QtCore.QObject):
     def _pause_if_requested(self) -> None:
         """Block the worker thread while a pause request is active."""
         with self._pause_condition:
-            if not self._pause_requested or self._shutting_down:
+            if not self._pause_requested or self._shutting_down or self._cancel_requested:
                 return
 
             self._set_blocked(True)
             pause_message = self._pause_status_message or "Runtime paused"
             self.status_changed.emit(pause_message)
 
-            while self._pause_requested and not self._shutting_down:
+            while (
+                self._pause_requested
+                and not self._shutting_down
+                and not self._cancel_requested
+            ):
                 self._pause_condition.wait()
 
             self._pause_status_message = None
@@ -577,15 +638,19 @@ class Runtime(QtCore.QObject):
             if self._is_state_machine_cancel_exception(exc):
                 self._handle_state_machine_canceled(exc)
             elif not self._disposed:
-                self._set_running(False)
-                self._set_blocked(False)
+                self.logger.append(f"[ERROR] {exc}", is_end=True)
+                self._finalize_runtime_completion(
+                    final_outcome="Failed",
+                    status_message="Runtime failed",
+                )
                 self.error_occurred.emit(f"Runtime execution failed:\n{exc}")
         finally:
             with self._worker_state_lock:
                 if threading.current_thread() is self._execution_thread:
                     self._execution_thread = None
-                if not self._running and not self._disposed:
-                    self.ready_changed.emit(self.is_ready())
+                emit_ready = not self._running and not self._disposed
+            if emit_ready:
+                self.ready_changed.emit(self.is_ready())
 
     def _register_callbacks(self) -> None:
         """Attach runtime callbacks to all containers in the loaded machine."""
@@ -688,6 +753,11 @@ class Runtime(QtCore.QObject):
             with self._worker_state_lock:
                 self._current_state_ref = self._resolve_state_reference(prefix)
             self._pause_if_requested()
+            return
+
+        if not outcome:
+            # YASMIN reports an empty outcome when the run raised (error or
+            # cancel); the worker's exception handler sets the terminal status.
             return
 
         self._finalize_runtime_completion(

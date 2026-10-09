@@ -15,6 +15,7 @@
 from typing import Dict, List, Optional, Tuple
 
 from yasmin_editor.qt_compat import Qt, QtWidgets, exec_dialog
+from yasmin_editor.model.value_types import format_default_value
 from yasmin_plugins_manager.plugin_info import PluginInfo
 from yasmin_editor.editor_gui.dialogs.parameter_overwrite_dialog import (
     ParameterOverwriteDialog,
@@ -301,7 +302,9 @@ class StatePropertiesDialog(QtWidgets.QDialog):
         child_parameter = str(parameter_data.get("child_parameter", "") or "").strip()
         description = str(parameter_data.get("description", "") or "").strip()
         default_type = str(parameter_data.get("default_type", "") or "").strip()
-        default_value = str(parameter_data.get("default_value", "") or "").strip()
+        default_value = format_default_value(
+            parameter_data.get("default_value"), default_type
+        ).strip()
 
         name_item = QtWidgets.QTableWidgetItem(name)
         name_item.setData(Qt.ItemDataRole.UserRole, description)

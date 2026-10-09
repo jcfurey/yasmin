@@ -35,6 +35,7 @@ from yasmin_editor.editor_gui.blackboard_logic import (
 from yasmin_editor.editor_gui.dialogs.blackboard_key_dialog import BlackboardKeyDialog
 from yasmin_editor.model.concurrence import Concurrence
 from yasmin_editor.model.key import Key
+from yasmin_editor.model.value_types import format_default_value
 from yasmin_editor.model.state import State
 from yasmin_editor.model.state_machine import StateMachine
 from yasmin_editor.model.orthogonal_state import OrthogonalState
@@ -248,7 +249,7 @@ class EditorBlackboardMixin:
             "description": str(data.get("description", "") or "").strip(),
             "key_type": "in",
             "default_type": str(data.get("type", "") or "").strip(),
-            "default_value": str(data.get("value", "") or "").strip(),
+            "default_value": format_default_value(data.get("value")).strip(),
         }
         self._set_container_metadata_map(self.current_container_model, metadata)
         self.sync_blackboard_keys()
@@ -291,7 +292,7 @@ class EditorBlackboardMixin:
             "name": key_data.get("name", ""),
             "key_type": key_data.get("key_type", "in"),
             "default_type": str(metadata.get("default_type", "") or ""),
-            "default_value": str(metadata.get("default_value", "") or ""),
+            "default_value": format_default_value(metadata.get("default_value")),
         }
 
         dlg = BlackboardKeyDialog(

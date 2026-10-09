@@ -126,7 +126,11 @@ def paste_state_machine_links(
         copied_source = state_name_map.get(source_name)
         if copied_source is None:
             continue
-        copied_target = state_name_map.get(transition.target, transition.target)
+        # Pasted outcomes may have been renamed (e.g. "done" -> "done2"); the
+        # transition must follow them like it follows renamed states.
+        copied_target = state_name_map.get(transition.target) or outcome_name_map.get(
+            transition.target, transition.target
+        )
         if copied_target not in known_targets:
             continue
         target_model.add_transition(

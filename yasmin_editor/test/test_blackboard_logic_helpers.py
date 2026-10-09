@@ -264,11 +264,16 @@ def test_merge_container_keys_keeps_persistent_metadata_and_drops_hidden_interme
         name="root",
         keys=[
             Key(name="shared", key_type="in", default_type="str", default_value="ok"),
-            Key(name="middle", key_type="in", description="transient alias"),
+            Key(
+                name="middle",
+                key_type="in",
+                description="transient alias",
+                derived=True,
+            ),
             Key(
                 name="persistent_only", key_type="in", default_type="int", default_value=1
             ),
-            Key(name="ephemeral", key_type="out", description="unused"),
+            Key(name="ephemeral", key_type="out", description="unused", derived=True),
         ],
     )
     nested = StateMachine(name="nested", remappings={"middle": "shared"})

@@ -14,6 +14,7 @@
 
 from typing import Dict, Optional
 from yasmin_editor.qt_compat import QtWidgets
+from yasmin_editor.model.value_types import format_default_value, normalize_value_type
 
 
 class BlackboardKeyDialog(QtWidgets.QDialog):
@@ -80,8 +81,13 @@ class BlackboardKeyDialog(QtWidgets.QDialog):
         self.default_type_combo.addItem("No default", "")
         for option in self.VALUE_TYPE_OPTIONS[1:]:
             self.default_type_combo.addItem(option, option)
-        default_type = str(key_data.get("default_type", "") or "")
+        # Accept every spelling the factory accepts (e.g. "double", "String").
+        default_type = normalize_value_type(key_data.get("default_type", ""))
         default_type_index = self.default_type_combo.findData(default_type)
+        if default_type_index < 0 and default_type:
+            # Keep an unknown type visible instead of silently dropping the default.
+            self.default_type_combo.addItem(default_type, default_type)
+            default_type_index = self.default_type_combo.findData(default_type)
         if default_type_index >= 0:
             self.default_type_combo.setCurrentIndex(default_type_index)
         else:
@@ -95,7 +101,9 @@ class BlackboardKeyDialog(QtWidgets.QDialog):
         layout.addRow("Default Type:", self.default_type_combo)
 
         self.default_value_edit = QtWidgets.QLineEdit(
-            str(key_data.get("default_value", "") or "")
+            format_default_value(
+                key_data.get("default_value"), key_data.get("default_type", "")
+            )
         )
         self.default_value_edit.setReadOnly(self.readonly)
         self.default_value_edit.setPlaceholderText(

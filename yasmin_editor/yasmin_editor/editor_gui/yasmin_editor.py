@@ -256,8 +256,8 @@ class YasminEditor(
 
         self._remember_clipboard_panel_width()
         self._shutdown_runtime_shell()
-        if self.runtime is not None:
-            self.runtime._disposed = True
+        # Runtime.shutdown() cancels and joins a running machine; it returns
+        # early when the runtime is already marked disposed, so do not set it.
         self._destroy_runtime()
         self._delete_runtime_snapshot()
 

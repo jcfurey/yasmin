@@ -15,7 +15,10 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import uuid
+import warnings
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 from xml.etree import ElementTree as ET
@@ -31,6 +34,19 @@ from yasmin_editor.model.state import State
 from yasmin_editor.model.state_machine import StateMachine
 from yasmin_editor.model.text_block import TextBlock
 from yasmin_editor.model.transition import Transition
+from yasmin_editor.model.value_types import format_default_value
+
+# Child elements that can define a state inside a state machine, region or
+# concurrence (mirrors the tags accepted by the YASMIN factories).
+_STATE_TAGS = frozenset(
+    {"State", "StateMachine", "Concurrence", "OrthogonalState", "JoinState"}
+)
+# Child elements that describe the owner itself and never define a state.
+_OWNER_DATA_TAGS = frozenset({"Param", "Key", "Default", "ParamRemap", "Remap"})
+# Characters that XML 1.0 cannot represent, even as character references.
+_INVALID_XML_CHARACTERS = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
+)
 
 
 def model_to_xml(
@@ -39,17 +55,22 @@ def model_to_xml(
     """Serialize a state machine model to XML."""
 
     root = _state_machine_to_element(model, parent=None)
+    _strip_invalid_xml_characters(root)
     if hasattr(ET, "indent"):
         ET.indent(root)
     xml_text = ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
     if file_path is not None:
-        target = Path(file_path)
+        # Write through symlinks (e.g. colcon --symlink-install share files) so
+        # the link target is updated instead of being replaced by a copy.
+        target = Path(os.path.realpath(file_path))
         temp_path = target.with_name(
             f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
         )
         try:
             temp_path.write_text(xml_text, encoding="utf-8")
+            if target.exists():
+                shutil.copymode(target, temp_path)
             os.replace(temp_path, target)
         except BaseException:
             try:
@@ -223,6 +244,9 @@ def _region_to_element(
     for parameter in region.parameters:
         element.append(_parameter_to_element(parameter))
 
+    for key in region.keys:
+        element.append(_key_to_element(key))
+
     _append_parameter_remaps(element, region.parameter_mappings)
     _append_remaps(element, region.remappings)
 
@@ -266,17 +290,19 @@ def _state_to_element(
         _append_owner_transitions(element, parent, state.name)
         return element
 
-    tag = "State" if state.state_type != "xml" else "StateMachine"
-    element = ET.Element(tag)
+    is_include = _is_xml_include(state)
+    element = ET.Element("StateMachine" if is_include else "State")
     element.set("name", state.name)
 
     if state.state_type:
         element.set("type", state.state_type)
-    if state.state_type == "py" and state.module:
+    if state.module and state.state_type in ("py", None) and not is_include:
         element.set("module", state.module)
     if state.class_name:
         element.set("class", state.class_name)
-    if state.state_type == "xml":
+    if is_include:
+        if state.file_path:
+            element.set("file_path", state.file_path)
         if state.file_name:
             element.set("file_name", state.file_name)
         if state.package_name:
@@ -292,10 +318,52 @@ def _state_to_element(
     for parameter in state.parameters:
         element.append(_parameter_to_element(parameter))
 
+    for key in state.keys:
+        element.append(_key_to_element(key))
+
     _append_parameter_remaps(element, state.parameter_mappings)
     _append_remaps(element, state.remappings)
     _append_owner_transitions(element, parent, state.name)
     return element
+
+
+def _is_xml_include(state: State) -> bool:
+    """Return whether a leaf model references an external state-machine XML."""
+
+    if state.state_type == "xml":
+        return True
+    return state.state_type is None and bool(state.file_path or state.file_name)
+
+
+def _strip_invalid_xml_characters(root: ET.Element) -> None:
+    """Remove characters XML 1.0 cannot encode so the file stays readable."""
+
+    for element in root.iter():
+        for name, value in list(element.attrib.items()):
+            cleaned = _INVALID_XML_CHARACTERS.sub("", value)
+            if cleaned != value:
+                element.set(name, cleaned)
+
+
+def absolutize_include_paths(
+    model: State,
+    base_dir: Union[str, Path],
+) -> State:
+    """Rewrite relative ``file_path`` includes so they resolve against *base_dir*.
+
+    The factory resolves a relative ``file_path`` against the directory of the
+    XML file being loaded. A copy written elsewhere (e.g. the runtime snapshot
+    in the temp directory) must therefore carry absolute include paths.
+    """
+
+    base = os.path.abspath(str(base_dir))
+    pending: List[State] = [model]
+    while pending:
+        state = pending.pop()
+        if state.file_path and not os.path.isabs(state.file_path):
+            state.file_path = os.path.normpath(os.path.join(base, state.file_path))
+        pending.extend(getattr(state, "states", {}).values())
+    return model
 
 
 def _text_block_to_element(text_block: TextBlock) -> ET.Element:
@@ -393,7 +461,7 @@ def _data_to_element(
         element.set("default_type", obj.default_type)
         element.set(
             "default_value",
-            "" if obj.default_value is None else str(obj.default_value),
+            format_default_value(obj.default_value, obj.default_type),
         )
 
     return element
@@ -484,7 +552,7 @@ def _parse_container_element(
     )
 
     model.parameters.extend(_parse_parameters(element.findall("Param")))
-    model.keys.extend(_parse_keys(element.findall("Key")))
+    model.keys.extend(_parse_keys(element))
     model.parameter_mappings.update(_parse_parameter_remaps(element))
     model.remappings.update(_parse_remaps(element))
     content_parser(model, element)
@@ -538,7 +606,7 @@ def _parse_container_content(
         model.add_outcome(Outcome(name=outcome_name))
 
     for child in element:
-        if child.tag in {"Param", "Key", "ParamRemap", "Remap"}:
+        if child.tag in _OWNER_DATA_TAGS:
             continue
 
         if child.tag == "Text":
@@ -553,10 +621,17 @@ def _parse_container_content(
             _parse_outcome_map(model, child)
             continue
 
+        if child.tag == "Outcome":
+            _parse_legacy_outcome_rule(model, child)
+            continue
+
         if child.tag == "Transition":
             continue
 
         if isinstance(model, OrthogonalState):
+            if child.tag != "Region":
+                _warn_unsupported_element(child, model)
+                continue
             region = _parse_region_container(child)
             model.add_state(region)
             x = _parse_float(child.get("x"))
@@ -564,6 +639,9 @@ def _parse_container_content(
             if x is not None and y is not None:
                 model.layout.set_state_position(region.name, x, y)
         else:
+            if child.tag not in _STATE_TAGS:
+                _warn_unsupported_element(child, model)
+                continue
             state = _parse_state_like(child)
             model.add_state(state)
             x = _parse_float(child.get("x"))
@@ -587,13 +665,14 @@ def _parse_region_container(element: ET.Element) -> StateMachine:
         region.add_outcome(Outcome(name=outcome_name))
 
     region.parameters.extend(_parse_parameters(element.findall("Param")))
+    region.keys.extend(_parse_keys(element))
     region.parameter_mappings.update(_parse_parameter_remaps(element))
     region.remappings.update(_parse_remaps(element))
 
     local_targets = _local_state_machine_targets(element)
 
     for child in element:
-        if child.tag in {"Param", "Key", "ParamRemap", "Remap"}:
+        if child.tag in _OWNER_DATA_TAGS:
             continue
 
         if child.tag == "Text":
@@ -605,6 +684,10 @@ def _parse_region_container(element: ET.Element) -> StateMachine:
             continue
 
         if child.tag == "Transition":
+            continue
+
+        if child.tag not in _STATE_TAGS:
+            _warn_unsupported_element(child, region)
             continue
 
         state = _parse_state_like(child)
@@ -642,7 +725,7 @@ def _parse_state_machine_content(
     local_targets = _local_state_machine_targets(element)
 
     for child in element:
-        if child.tag in {"Param", "Key", "ParamRemap", "Remap"}:
+        if child.tag in _OWNER_DATA_TAGS:
             continue
 
         if child.tag == "Text":
@@ -658,7 +741,9 @@ def _parse_state_machine_content(
                 model.add_transition(model.name, _parse_transition(child))
             continue
 
-        if child.tag == "OutcomeMap":
+        if child.tag not in _STATE_TAGS:
+            if child.tag != "OutcomeMap":
+                _warn_unsupported_element(child, model)
             continue
 
         state = _parse_state_like(child)
@@ -787,6 +872,34 @@ def _parse_outcome_map(
             model.set_outcome_rule(outcome_name, state_name, state_outcome)
 
 
+def _parse_legacy_outcome_rule(
+    model: Union[Concurrence, OrthogonalState],
+    element: ET.Element,
+) -> None:
+    """Convert the legacy ``<Outcome to=...><Transition state= outcome=/>`` rule.
+
+    The C++ factory still accepts this older outcome-map syntax. It is read
+    into the regular outcome map and written back as ``<OutcomeMap>``.
+    """
+
+    outcome_name = element.get("to", "")
+    if not outcome_name:
+        return
+
+    for item in element.findall("Transition"):
+        state_name = item.get("state", "")
+        state_outcome = item.get("outcome", "")
+        if state_name and state_outcome:
+            model.set_outcome_rule(outcome_name, state_name, state_outcome)
+
+
+def _warn_unsupported_element(element: ET.Element, owner: State) -> None:
+    warnings.warn(
+        f"Ignoring unsupported XML element <{element.tag}> in '{owner.name}'",
+        stacklevel=3,
+    )
+
+
 def _parse_state_like(element: ET.Element) -> State:
     if element.tag == "Concurrence":
         return _parse_concurrence_container(element)
@@ -794,7 +907,27 @@ def _parse_state_like(element: ET.Element) -> State:
     if element.tag == "OrthogonalState":
         return _parse_orthogonal_state_container(element)
 
-    if element.tag == "StateMachine" and not element.get("file_name"):
+    if element.tag == "StateMachine" and (
+        element.get("file_path") or element.get("file_name")
+    ):
+        # Included state machine, resolved by the factory via ``file_path``
+        # (relative to the including file) or ``file_name`` + ``package``.
+        state = State(
+            name=element.get("name", ""),
+            description=element.get("description", ""),
+            state_type=element.get("type") or "xml",
+            class_name=element.get("class"),
+            package_name=element.get("package"),
+            file_name=element.get("file_name"),
+            file_path=element.get("file_path"),
+        )
+        state.parameters.extend(_parse_parameters(element.findall("Param")))
+        state.parameter_mappings.update(_parse_parameter_remaps(element))
+        state.remappings.update(_parse_remaps(element))
+        state.keys.extend(_parse_keys(element))
+        return state
+
+    if element.tag == "StateMachine":
         return _parse_state_machine_container(
             element,
             include_container_level_transitions=False,
@@ -814,7 +947,8 @@ def _parse_state_like(element: ET.Element) -> State:
     state = State(
         name=element.get("name", ""),
         description=element.get("description", ""),
-        state_type=element.get("type"),
+        # The factories treat a <State> without ``type`` as a Python state.
+        state_type=element.get("type") or "py",
         module=element.get("module"),
         class_name=element.get("class"),
         package_name=element.get("package"),
@@ -823,7 +957,7 @@ def _parse_state_like(element: ET.Element) -> State:
     state.parameters.extend(_parse_parameters(element.findall("Param")))
     state.parameter_mappings.update(_parse_parameter_remaps(element))
     state.remappings.update(_parse_remaps(element))
-    state.keys.extend(_parse_keys(element.findall("Key")))
+    state.keys.extend(_parse_keys(element))
     return state
 
 
@@ -851,11 +985,14 @@ def _parse_typed_elements(
 ) -> list:
     result = []
     for element in elements:
+        default_type, default_value = _parse_default(
+            element.get("default_type"), element.get("default_value")
+        )
         kwargs = {
             "name": element.get("name", ""),
             "description": element.get("description", ""),
-            "default_type": element.get("default_type", ""),
-            "default_value": element.get("default_value"),
+            "default_type": default_type,
+            "default_value": default_value,
         }
         if field_fn:
             kwargs.update(field_fn(element))
@@ -863,16 +1000,54 @@ def _parse_typed_elements(
     return result
 
 
+def _parse_default(
+    default_type: Optional[str],
+    default_value: Optional[str],
+) -> Tuple[str, Optional[str]]:
+    """Mirror the factory: a default exists iff ``default_value`` is present.
+
+    ``default_type`` then defaults to ``str``. A ``default_type`` without a
+    value declares no default and is ignored by the factory.
+    """
+
+    if default_value is None:
+        return "", None
+    return (default_type or "").strip() or "str", default_value
+
+
 def _parse_parameters(elements: Iterable[ET.Element]) -> List[Parameter]:
     return _parse_typed_elements(elements, Parameter)
 
 
-def _parse_keys(elements: Iterable[ET.Element]) -> List[Key]:
-    return _parse_typed_elements(
-        elements,
-        Key,
-        field_fn=lambda e: {"key_type": e.get("type", "in")},
-    )
+def _parse_keys(owner: ET.Element) -> List[Key]:
+    """Parse ``<Key>`` children and the legacy ``<Default key= value=>`` syntax."""
+
+    keys: List[Key] = []
+    for child in owner:
+        if child.tag == "Key":
+            keys.extend(
+                _parse_typed_elements(
+                    [child],
+                    Key,
+                    field_fn=lambda e: {
+                        "key_type": (e.get("type") or "in").strip().lower()
+                    },
+                )
+            )
+        elif child.tag == "Default" and child.get("key"):
+            default_type, default_value = _parse_default(
+                child.get("type"), child.get("value", "")
+            )
+            keys.append(
+                Key(
+                    name=child.get("key", ""),
+                    description=child.get("description", ""),
+                    key_type="in",
+                    default_type=default_type,
+                    default_value=default_value,
+                )
+            )
+    return keys
 
 
 def _parse_remap_dict(element: ET.Element, tag: str) -> Dict[str, str]:

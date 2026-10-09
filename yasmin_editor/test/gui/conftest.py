@@ -15,16 +15,35 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# ament runs every test file on its own, so pytest's rootdir is this directory
+# and ../conftest.py is never loaded. Everything the GUI tests need (offscreen
+# platform, the qapp fixture) therefore has to be defined here; pytest-qt is
+# intentionally not required.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from gui_test_support import FakePluginManager, install_external_dependency_stubs
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    pytest.importorskip("yasmin_editor.qt_compat")
+    from yasmin_editor.qt_compat import QtWidgets
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        app = QtWidgets.QApplication(["pytest", "-platform", "offscreen"])
+    app.setQuitOnLastWindowClosed(False)
+    yield app
 
 
 @pytest.fixture

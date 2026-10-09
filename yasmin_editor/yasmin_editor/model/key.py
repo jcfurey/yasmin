@@ -21,6 +21,12 @@ from .parameter import Parameter
 
 @dataclass(slots=True)
 class Key(Parameter):
-    """Represents a blackboard key definition."""
+    """Represents a blackboard key definition.
+
+    ``derived`` marks keys the editor inferred from child-state usage during the
+    current session. Such keys are dropped again when their usage disappears,
+    whereas keys loaded from XML or edited by the user are always kept.
+    """
 
     key_type: str = "in"
+    derived: bool = False

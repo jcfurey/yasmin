@@ -55,6 +55,7 @@ from yasmin_editor.editor_gui.nodes.state_node import StateNode
 from yasmin_editor.editor_gui.scene_selection import collect_scene_selection
 from yasmin_editor.editor_gui.transition_rules import (
     TransitionRuleError,
+    ensure_single_outcome_rule,
     get_available_transition_outcomes,
     validate_drag_target,
 )
@@ -409,17 +410,27 @@ class EditorUiMixin:
             return
 
         if len(available_outcomes) < 2:
-            self.create_connection(from_node, to_node, available_outcomes[0])
+            selected_outcomes = [available_outcomes[0]]
+        else:
+            picker = TransitionOutcomePickerDialog(
+                parent=self,
+                source_name=from_node.name,
+                available_outcomes=available_outcomes,
+            )
+            if not exec_dialog(picker):
+                return
+            selected_outcomes = list(picker.selected_outcomes())
+
+        try:
+            ensure_single_outcome_rule(
+                current_model, from_node.name, to_node.name, selected_outcomes
+            )
+        except TransitionRuleError as exc:
+            QtWidgets.QMessageBox.warning(self, getattr(exc, "title", "Error"), str(exc))
             return
 
-        picker = TransitionOutcomePickerDialog(
-            parent=self,
-            source_name=from_node.name,
-            available_outcomes=available_outcomes,
-        )
-        if exec_dialog(picker):
-            for outcome_name in picker.selected_outcomes():
-                self.create_connection(from_node, to_node, outcome_name)
+        for outcome_name in selected_outcomes:
+            self.create_connection(from_node, to_node, outcome_name)
 
     def rewire_connection(
         self,
@@ -443,6 +454,14 @@ class EditorUiMixin:
                 2000,
             )
             connection.setSelected(True)
+            return
+
+        try:
+            ensure_single_outcome_rule(
+                self.current_container_model, from_node.name, to_node.name, [outcome]
+            )
+        except TransitionRuleError as exc:
+            QtWidgets.QMessageBox.warning(self, getattr(exc, "title", "Error"), str(exc))
             return
 
         self.unregister_connection_in_model(connection)
@@ -774,6 +793,7 @@ class EditorUiMixin:
                         [],
                     ):
                         return
+                    old_outcome = state_node.model.join_outcome
                     state_node.model.sync_id = sync_id
                     state_node.model.join_outcome = outcome
                     old_desc = ""
@@ -782,6 +802,22 @@ class EditorUiMixin:
                     state_node.model.outcomes = [
                         Outcome(name=outcome, description=old_desc)
                     ]
+                    if old_outcome != outcome:
+                        # Keep the transitions/outcome rules leaving the join
+                        # state attached to its renamed outcome.
+                        self.current_container_model.rename_child_state_outcome(
+                            state_node.name,
+                            old_outcome,
+                            outcome,
+                        )
+                        for connection in list(state_node.connections):
+                            if (
+                                connection.from_node is state_node
+                                and connection.outcome == old_outcome
+                            ):
+                                connection.outcome = outcome
+                                connection.label.setPlainText(outcome)
+                                connection.update_position()
                     self.sync_blackboard_keys()
                     self.refresh_connection_port_visibility()
                     self.statusBar().showMessage(f"Updated join state: {name}", 2000)

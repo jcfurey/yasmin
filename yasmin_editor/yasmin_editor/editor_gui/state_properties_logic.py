@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from yasmin_editor.model.value_types import format_default_value
+
 try:
     from yasmin_plugins_manager.plugin_info import PluginInfo
 except ModuleNotFoundError:  # pragma: no cover - exercised in headless tests
@@ -64,7 +66,9 @@ def _metadata_default_value_text(metadata: Dict[str, str]) -> str:
     """Return the normalized default-value text for one metadata row."""
 
     if metadata.get("has_default") or metadata.get("default_value") not in (None, ""):
-        return str(metadata.get("default_value", "") or "").strip()
+        return format_default_value(
+            metadata.get("default_value"), _display_metadata_type(metadata)
+        ).strip()
     return ""
 
 
@@ -232,7 +236,9 @@ def normalize_parameter_overwrite_row(parameter_data: Dict[str, str]) -> Dict[st
         "child_parameter": str(parameter_data.get("child_parameter", "") or "").strip(),
         "description": str(parameter_data.get("description", "") or "").strip(),
         "default_type": str(parameter_data.get("default_type", "") or "").strip(),
-        "default_value": str(parameter_data.get("default_value", "") or "").strip(),
+        "default_value": format_default_value(
+            parameter_data.get("default_value"), parameter_data.get("default_type", "")
+        ).strip(),
     }
 
 

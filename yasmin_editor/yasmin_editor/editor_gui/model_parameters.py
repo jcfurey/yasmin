@@ -90,11 +90,14 @@ def apply_parameter_overwrites(
 ) -> None:
     """Apply one child overwrite table back into the container and child models.
 
-    The container keeps only declarations that remain referenced by at least one
-    child after the update. Declaration order is preserved for existing entries,
-    while newly introduced names are appended.
+    Declarations that this child referenced before the update and that no
+    child references afterwards are removed. All other container declarations
+    (e.g. parameters loaded from XML that no child maps yet) are kept.
+    Declaration order is preserved for existing entries, while newly introduced
+    names are appended.
     """
 
+    previously_referenced = set(child_model.parameter_mappings.values())
     child_model.parameter_mappings.clear()
     for child_parameter, parent_parameter in iter_valid_overwrite_pairs(overwrites):
         child_model.parameter_mappings[child_parameter] = parent_parameter
@@ -114,10 +117,12 @@ def apply_parameter_overwrites(
         for state in container_model.states.values()
         for parent_name in state.parameter_mappings.values()
     }
+    used_names.update(child_model.parameter_mappings.values())
+    released_names = previously_referenced - used_names
     container_model.parameters = [
         declarations_by_name[name]
         for name in declaration_order
-        if name in declarations_by_name and name in used_names
+        if name in declarations_by_name and name not in released_names
     ]
 
 

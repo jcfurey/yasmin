@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from typing import List, Union
 from yasmin_editor.model.concurrence import Concurrence
+from yasmin_editor.model.container_state import iter_outcome_rule_values
 from yasmin_editor.model.orthogonal_state import OrthogonalState
 from yasmin_editor.model.state_machine import StateMachine
 
@@ -85,3 +86,32 @@ def get_available_transition_outcomes(
         raise TransitionRuleError("All outcomes from this state are already used!")
 
     return available_outcomes
+
+
+def ensure_single_outcome_rule(
+    container_model,
+    source_name: str,
+    target_name: str,
+    outcomes: Sequence[str],
+) -> None:
+    """Reject a second child outcome for one outcome-map rule.
+
+    YASMIN outcome maps (Concurrence and OrthogonalState) store exactly one
+    outcome per child state for each container outcome, so mapping two child
+    outcomes to the same final outcome would silently keep only the last one.
+    """
+
+    if not isinstance(container_model, (Concurrence, OrthogonalState)):
+        return
+
+    existing = iter_outcome_rule_values(
+        container_model.outcome_map.get(target_name, {}).get(source_name, [])
+    )
+    combined = list(dict.fromkeys(list(existing) + list(outcomes)))
+    if len(combined) > 1:
+        raise TransitionRuleError(
+            f"'{source_name}' can map only one outcome to '{target_name}' "
+            f"(requested: {', '.join(combined)}). YASMIN outcome maps keep a single "
+            "outcome per state for each final outcome.",
+            title="Not Allowed",
+        )

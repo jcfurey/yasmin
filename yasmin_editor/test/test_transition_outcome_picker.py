@@ -107,10 +107,15 @@ def test_create_connection_from_drag_uses_picker_for_available_state_machine_out
     ]
 
 
-def test_create_connection_from_drag_allows_multi_select_for_concurrence(monkeypatch):
+def test_create_connection_from_drag_rejects_two_outcomes_for_one_concurrence_rule(
+    monkeypatch,
+):
+    # YASMIN outcome maps hold one outcome per child for each final outcome;
+    # mapping two would silently keep only the last one in the factory.
     editor = DummyEditor(Concurrence(name="cc"))
     from_node = make_node("worker", ["done", "failed"])
     to_node = FakeFinalOutcomeNode("finished")
+    warnings = []
 
     monkeypatch.setattr(
         "yasmin_editor.editor_gui.editor_mixin.editor_ui_mixin.FinalOutcomeNode",
@@ -120,6 +125,10 @@ def test_create_connection_from_drag_allows_multi_select_for_concurrence(monkeyp
         "yasmin_editor.editor_gui.editor_mixin.editor_ui_mixin.TransitionOutcomePickerDialog",
         FakeConcurrencePicker,
     )
+    monkeypatch.setattr(
+        "yasmin_editor.editor_gui.editor_mixin.editor_ui_mixin.QtWidgets.QMessageBox.warning",
+        lambda _parent, title, text: warnings.append((title, text)),
+    )
 
     editor.create_connection_from_drag(from_node, to_node)
 
@@ -127,10 +136,21 @@ def test_create_connection_from_drag_allows_multi_select_for_concurrence(monkeyp
         "done",
         "failed",
     ]
-    assert editor.created_connections == [
-        ("worker", "finished", "done"),
-        ("worker", "finished", "failed"),
-    ]
+    assert editor.created_connections == []
+    assert warnings and warnings[0][0] == "Not Allowed"
+
+    # A single outcome is fine, but a second one for the same rule is rejected.
+    FakeConcurrencePicker.outcomes_to_return = ["done"]
+    try:
+        editor.create_connection_from_drag(from_node, to_node)
+        assert editor.created_connections == [("worker", "finished", "done")]
+        editor.current_container_model.set_outcome_rule("finished", "worker", "done")
+        FakeConcurrencePicker.outcomes_to_return = ["failed"]
+        editor.create_connection_from_drag(from_node, to_node)
+        assert editor.created_connections == [("worker", "finished", "done")]
+        assert len(warnings) == 2
+    finally:
+        FakeConcurrencePicker.outcomes_to_return = ["done", "failed"]
 
 
 def test_create_connection_from_drag_filters_used_state_machine_outcomes(monkeypatch):

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional, Union
 
 from yasmin_editor.qt_compat import Qt, QtGui, QtWidgets
@@ -304,6 +305,20 @@ class EditorCanvasMixin:
         self, state_node: ContainerStateNode
     ) -> Optional[str]:
         state_model = getattr(state_node, "model", None)
+        include_path = getattr(state_model, "file_path", None)
+        if include_path:
+            # Like the factory: relative includes resolve against the directory
+            # of the including document.
+            if not os.path.isabs(include_path):
+                base_dir = (
+                    os.path.dirname(os.path.abspath(self.current_file_path))
+                    if self.current_file_path
+                    else os.getcwd()
+                )
+                include_path = os.path.normpath(os.path.join(base_dir, include_path))
+            if os.path.isfile(include_path):
+                return include_path
+
         plugin_info = getattr(state_node, "plugin_info", None)
         if plugin_info is None and state_model is not None:
             try:

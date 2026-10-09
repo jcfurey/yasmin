@@ -197,9 +197,38 @@ class _RuntimeShellCommand:
         return self._execute()
 
     def __repr__(self) -> str:
-        return self._execute()
+        # Must stay side-effect free: printing locals(), %whos or a variable
+        # inspector would otherwise run every debugger command in turn. A bare
+        # command name typed in the console is rewritten to a call instead
+        # (see rewrite_bare_shell_commands).
+        return f"<shell command {self._name}(): {self.__doc__}>"
 
     __str__ = __repr__
+
+
+SHELL_COMMAND_NAMES = (
+    "next",
+    "step",
+    "cont",
+    "play",
+    "pause",
+    "cancel_state",
+    "cancel_sm",
+    "restart",
+    "where",
+)
+
+
+def rewrite_bare_shell_commands(
+    lines: List[str],
+    command_names: Any = SHELL_COMMAND_NAMES,
+) -> List[str]:
+    """Turn a cell that is exactly one command name (e.g. ``next``) into a call."""
+
+    source = "".join(lines).strip()
+    if source in set(command_names):
+        return [f"{source}()\n"]
+    return lines
 
 
 class _ShellDialog(QtWidgets.QDialog):
@@ -388,6 +417,9 @@ class InteractiveShellManager(QtCore.QObject):
             return
 
         shell.automagic = True
+        transformers = getattr(shell, "input_transformers_cleanup", None)
+        if transformers is not None and rewrite_bare_shell_commands not in transformers:
+            transformers.append(rewrite_bare_shell_commands)
 
         def _register_magic(name: str) -> None:
             def _magic(line: str = "") -> str:
@@ -400,17 +432,7 @@ class InteractiveShellManager(QtCore.QObject):
                 magic_name=name,
             )
 
-        for command_name in [
-            "next",
-            "step",
-            "cont",
-            "play",
-            "pause",
-            "cancel_state",
-            "cancel_sm",
-            "restart",
-            "where",
-        ]:
+        for command_name in SHELL_COMMAND_NAMES:
             _register_magic(command_name)
 
     def _apply_widget_palette(self, widget: QtWidgets.QWidget) -> None:

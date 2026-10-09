@@ -18,6 +18,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple, Set
 
 from yasmin_editor.model.concurrence import Concurrence
 from yasmin_editor.model.key import Key
+from yasmin_editor.model.value_types import format_default_value
 from yasmin_editor.model.orthogonal_state import OrthogonalState
 from yasmin_editor.model.state import State
 from yasmin_editor.model.state_machine import StateMachine
@@ -51,7 +52,7 @@ def format_blackboard_key_label(key_data: Dict[str, str]) -> str:
 
     default_type = str(key_data.get("default_type", "")).strip()
     if default_type:
-        default_value = str(key_data.get("default_value", ""))
+        default_value = format_default_value(key_data.get("default_value"), default_type)
         label += f" [default: {default_value}, type: {default_type}]"
 
     return label
@@ -71,7 +72,8 @@ def dicts_to_keys(keys: List[Dict[str, str]]) -> List[Key]:
                 key_type=str(key_data.get("key_type", "in") or "in").strip(),
                 description=str(key_data.get("description", "") or "").strip(),
                 default_type=str(key_data.get("default_type", "") or "").strip(),
-                default_value=str(key_data.get("default_value", "") or ""),
+                default_value=format_default_value(key_data.get("default_value")),
+                derived=bool(key_data.get("derived", False)),
             )
         )
     return result
@@ -82,17 +84,16 @@ def keys_to_dicts(keys: Iterable[Key]) -> List[Dict[str, str]]:
 
     result: List[Dict[str, str]] = []
     for key in keys:
-        result.append(
-            {
-                "name": key.name,
-                "key_type": key.key_type,
-                "description": key.description,
-                "default_type": key.default_type,
-                "default_value": (
-                    "" if key.default_value is None else str(key.default_value)
-                ),
-            }
-        )
+        row = {
+            "name": key.name,
+            "key_type": key.key_type,
+            "description": key.description,
+            "default_type": key.default_type,
+            "default_value": format_default_value(key.default_value, key.default_type),
+        }
+        if getattr(key, "derived", False):
+            row["derived"] = True
+        result.append(row)
     return result
 
 
@@ -122,12 +123,13 @@ def build_container_metadata_map(
             "description": str(getattr(key, "description", "") or "").strip(),
             "key_type": str(getattr(key, "key_type", "in") or "in").strip(),
             "default_type": str(getattr(key, "default_type", "") or "").strip(),
-            "default_value": (
-                ""
-                if getattr(key, "default_value", None) is None
-                else str(getattr(key, "default_value", ""))
+            "default_value": format_default_value(
+                getattr(key, "default_value", None),
+                getattr(key, "default_type", ""),
             ),
         }
+        if getattr(key, "derived", False):
+            metadata[key_name]["derived"] = True
     return metadata
 
 
@@ -142,6 +144,7 @@ def metadata_map_to_keys(metadata: Dict[str, Dict[str, str]]) -> List[Key]:
                 "description": values.get("description", ""),
                 "default_type": values.get("default_type", ""),
                 "default_value": values.get("default_value", ""),
+                "derived": bool(values.get("derived", False)),
             }
             for key_name, values in sorted(
                 metadata.items(), key=lambda item: item[0].lower()
@@ -231,7 +234,7 @@ def _build_derived_keys(
         if key_type in ("in", "in/out"):
             default_type = str(metadata.get("default_type", "") or "")
             if default_type:
-                default_value = str(metadata.get("default_value", "") or "")
+                default_value = format_default_value(metadata.get("default_value"))
 
         derived_keys[key_name] = {
             "name": key_name,
@@ -321,11 +324,33 @@ def has_persistent_blackboard_metadata(metadata: Dict[str, str]) -> bool:
     )
 
 
+def _merge_key_types(first: str, second: str) -> str:
+    """Return the union of two key usages (``in``, ``out`` or ``in/out``)."""
+
+    usages = set()
+    for key_type in (first, second):
+        if key_type in ("in", "in/out"):
+            usages.add("in")
+        if key_type in ("out", "in/out"):
+            usages.add("out")
+    if usages == {"in", "out"}:
+        return "in/out"
+    if usages == {"out"}:
+        return "out"
+    return "in"
+
+
 def merge_container_keys(
     container_model: StateMachine | Concurrence,
     resolve_plugin_info_for_model: ResolvePluginInfo,
 ) -> Dict[str, Dict[str, str]]:
-    """Merge derived usage and persistent metadata for one container."""
+    """Merge derived usage and stored key declarations for one container.
+
+    Keys loaded from XML or edited by the user are declarations of the
+    container and are always kept (their usage is widened by live usage).
+    Keys that the editor only derived from child usage earlier in the session
+    (``derived``) are dropped once that usage disappears.
+    """
 
     derived_keys, hidden_key_names = collect_blackboard_key_usage_for_model(
         container_model,
@@ -339,14 +364,24 @@ def merge_container_keys(
         key=str.lower,
     ):
         metadata = dict(metadata_map.get(key_name, {}))
+        is_declared = bool(metadata) and not metadata.get("derived", False)
         if key_name not in derived_keys:
-            if key_name in hidden_key_names:
-                continue
-            if not has_persistent_blackboard_metadata(metadata):
+            if not is_declared and (
+                key_name in hidden_key_names
+                or not has_persistent_blackboard_metadata(metadata)
+            ):
                 continue
 
         derived = dict(derived_keys.get(key_name, {}))
-        key_type = str(derived.get("key_type", metadata.get("key_type", "in")) or "in")
+        if is_declared and derived:
+            key_type = _merge_key_types(
+                str(metadata.get("key_type", "in") or "in"),
+                str(derived.get("key_type", "in") or "in"),
+            )
+        else:
+            key_type = str(
+                derived.get("key_type", metadata.get("key_type", "in")) or "in"
+            )
         merged[key_name] = {
             "name": key_name,
             "key_type": key_type,
@@ -356,12 +391,14 @@ def merge_container_keys(
             "default_type": str(
                 metadata.get("default_type", "") or derived.get("default_type", "") or ""
             ),
-            "default_value": str(
-                metadata.get("default_value", "")
-                or derived.get("default_value", "")
-                or ""
+            "default_value": format_default_value(
+                metadata.get("default_value")
+                if metadata.get("default_value") not in (None, "")
+                else derived.get("default_value")
             ),
         }
+        if not is_declared:
+            merged[key_name]["derived"] = True
     return merged
 
 
@@ -423,10 +460,9 @@ def collect_container_key_lists(
             "name": str(getattr(key, "name", "") or ""),
             "description": str(getattr(key, "description", "") or ""),
             "default_type": str(getattr(key, "default_type", "") or ""),
-            "default_value": (
-                ""
-                if getattr(key, "default_value", None) is None
-                else str(getattr(key, "default_value", ""))
+            "default_value": format_default_value(
+                getattr(key, "default_value", None),
+                getattr(key, "default_type", ""),
             ),
             "has_default": bool(getattr(key, "default_type", "") or ""),
         }

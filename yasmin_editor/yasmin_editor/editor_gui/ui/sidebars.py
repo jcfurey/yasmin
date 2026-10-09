@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Callable, Tuple
 from yasmin_editor.qt_compat import QtWidgets
+from yasmin_editor.editor_gui.runtime_ui import RUNTIME_LOG_VIEW_MAX_BLOCKS
 
 
 def build_left_panel(editor) -> QtWidgets.QWidget:
@@ -185,6 +186,7 @@ def build_runtime_sidebar_widget(editor) -> QtWidgets.QWidget:
     editor.runtime_log_view.setLineWrapMode(QtWidgets.QTextBrowser.LineWrapMode.NoWrap)
     editor.runtime_log_view.setProperty("viewerText", True)
     editor.runtime_log_view.document().setDocumentMargin(8)
+    editor.runtime_log_view.document().setMaximumBlockCount(RUNTIME_LOG_VIEW_MAX_BLOCKS)
     layout.addWidget(editor.runtime_log_view)
 
     widget.setVisible(False)

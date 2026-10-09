@@ -210,6 +210,11 @@ class ContainerState(State):
             else:
                 mapping.pop(state_name, None)
 
+    def remove_child_state_outcome(self, state_name: str, outcome: str) -> None:
+        """Remove every outcome-map rule that uses one child-state outcome."""
+        for final_outcome in list(self.outcome_map):
+            self.remove_outcome_rule(final_outcome, state_name, outcome)
+
     def remove_outcome(self, name: str) -> None:
         """Remove a final outcome and its outcome-map rule."""
         self.outcomes = [outcome for outcome in self.outcomes if outcome.name != name]

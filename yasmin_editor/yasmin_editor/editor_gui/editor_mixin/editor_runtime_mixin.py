@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import tempfile
 from typing import Optional, Tuple
@@ -44,6 +45,7 @@ from yasmin_editor.editor_gui.runtime_state import (
     runtime_state_name_for_container,
 )
 from yasmin_editor.editor_gui.runtime_ui import (
+    RUNTIME_LOG_VIEW_MAX_BLOCKS,
     format_runtime_log_entry,
     runtime_canvas_frame_style,
     runtime_log_view_style,
@@ -52,6 +54,7 @@ from yasmin_editor.editor_gui.runtime_ui import (
     runtime_status_badge_style,
     runtime_toggle_button_style,
 )
+from yasmin_editor.io.xml_converter import absolutize_include_paths, model_to_xml
 from yasmin_editor.runtime import Runtime
 from yasmin_editor.runtime.interactive_shell import InteractiveShellManager
 
@@ -170,9 +173,13 @@ class EditorRuntimeMixin:
     def _schedule_runtime_highlight_refresh(self) -> None:
         if not self.runtime_mode_enabled:
             return
+        if getattr(self, "_runtime_highlight_refresh_pending", False):
+            return
+        self._runtime_highlight_refresh_pending = True
         QtCore.QTimer.singleShot(0, self._refresh_runtime_highlighting_from_runtime)
 
     def _refresh_runtime_highlighting_from_runtime(self) -> None:
+        self._runtime_highlight_refresh_pending = False
         if not self.runtime_mode_enabled:
             return
         self._get_live_runtime_active_path()
@@ -180,6 +187,14 @@ class EditorRuntimeMixin:
         self.refresh_visual_highlighting()
 
     def create_runtime_xml_snapshot(self) -> str:
+        """Write the current document to a temporary XML file for the runtime.
+
+        The factory resolves a relative ``file_path`` include against the
+        directory of the XML file it loads. The snapshot lives in the temp
+        directory, so relative includes are rewritten to absolute paths based
+        on the document's directory (the working directory for unsaved
+        documents). The document itself is left untouched.
+        """
         self.sync_current_container_layout()
         self._delete_runtime_snapshot()
 
@@ -190,7 +205,14 @@ class EditorRuntimeMixin:
         os.close(fd)
         self.runtime_snapshot_file_path = temp_path
 
-        self.save_to_xml(self.runtime_snapshot_file_path)
+        if self.current_file_path:
+            base_dir = os.path.dirname(os.path.abspath(self.current_file_path))
+        else:
+            base_dir = os.getcwd()
+        snapshot_model = absolutize_include_paths(
+            copy.deepcopy(self.root_model), base_dir
+        )
+        model_to_xml(snapshot_model, self.runtime_snapshot_file_path)
         return self.runtime_snapshot_file_path
 
     def _set_runtime_mode_button_checked(self, checked: bool) -> None:
@@ -608,10 +630,15 @@ class EditorRuntimeMixin:
         if not hasattr(self, "runtime_status_label"):
             return
         label_text = str(status).strip() or "Inactive"
+        badge_style = self._runtime_status_badge_style(label_text)
+        if getattr(self, "_applied_runtime_status_badge", None) == (
+            label_text,
+            badge_style,
+        ):
+            return
         self.runtime_status_label.setText(label_text)
-        self.runtime_status_label.setStyleSheet(
-            self._runtime_status_badge_style(label_text)
-        )
+        self.runtime_status_label.setStyleSheet(badge_style)
+        self._applied_runtime_status_badge = (label_text, badge_style)
 
     def _runtime_log_view_style(self) -> str:
         """Return the stylesheet used by the runtime log view."""
@@ -658,14 +685,39 @@ class EditorRuntimeMixin:
 
     def clear_runtime_log_view(self) -> None:
         """Clear the runtime log widget shown in the sidebar."""
+        self._pending_runtime_log_entries = []
         if hasattr(self, "runtime_log_view"):
             self.runtime_log_view.clear()
 
     def append_runtime_log(self, message: str) -> None:
-        """Append a formatted runtime log message to the sidebar view."""
+        """Queue a runtime log message for the sidebar view.
+
+        Messages are appended in batches: a busy machine logs far faster than
+        a rich-text view can lay out (and trim) one line at a time, which made
+        the GUI fall ever further behind.
+        """
         if not hasattr(self, "runtime_log_view"):
             return
-        self.runtime_log_view.append(self._format_runtime_log_entry(str(message)))
+        pending = getattr(self, "_pending_runtime_log_entries", None)
+        if pending is None:
+            pending = self._pending_runtime_log_entries = []
+        pending.append(str(message))
+        if len(pending) > RUNTIME_LOG_VIEW_MAX_BLOCKS:
+            del pending[: len(pending) - RUNTIME_LOG_VIEW_MAX_BLOCKS]
+        if len(pending) == 1:
+            QtCore.QTimer.singleShot(0, self.flush_runtime_log)
+
+    def flush_runtime_log(self) -> None:
+        """Append all queued runtime log messages in one document edit."""
+        pending = getattr(self, "_pending_runtime_log_entries", None) or []
+        self._pending_runtime_log_entries = []
+        if not pending or not hasattr(self, "runtime_log_view"):
+            return
+        cursor = QtGui.QTextCursor(self.runtime_log_view.document())
+        cursor.beginEditBlock()
+        for message in pending:
+            self.runtime_log_view.append(self._format_runtime_log_entry(message))
+        cursor.endEditBlock()
         scrollbar = self.runtime_log_view.verticalScrollBar()
         if scrollbar is not None:
             scrollbar.setValue(scrollbar.maximum())
@@ -675,7 +727,7 @@ class EditorRuntimeMixin:
         self._refresh_runtime_shell_context()
         self._follow_runtime_active_state()
         self._schedule_runtime_highlight_refresh()
-        self.update_runtime_actions()
+        self._schedule_runtime_actions_update()
 
     def on_runtime_transition_changed(
         self,
@@ -698,10 +750,22 @@ class EditorRuntimeMixin:
     def on_runtime_status_changed(self, message: str) -> None:
         self.statusBar().showMessage(message, 3000)
         self.append_runtime_log(f"[STATUS] {message}")
-        runtime = self.runtime
-        if runtime is not None:
-            self._update_runtime_status_badge(runtime.get_status_label())
         self._refresh_runtime_shell_context()
+        self._schedule_runtime_actions_update()
+
+    def _schedule_runtime_actions_update(self) -> None:
+        """Coalesce bursts of runtime signals into one control/badge refresh.
+
+        Fast looping machines emit state and status changes continuously;
+        refreshing every button and stylesheet for each one starves the GUI.
+        """
+        if getattr(self, "_runtime_actions_update_pending", False):
+            return
+        self._runtime_actions_update_pending = True
+        QtCore.QTimer.singleShot(0, self._flush_runtime_actions_update)
+
+    def _flush_runtime_actions_update(self) -> None:
+        self._runtime_actions_update_pending = False
         self.update_runtime_actions()
 
     def on_runtime_error(self, message: str) -> None:
@@ -728,7 +792,10 @@ class EditorRuntimeMixin:
             )
 
         if hasattr(self, "runtime_log_view"):
-            self.runtime_log_view.setStyleSheet(self._runtime_log_view_style())
+            log_view_style = self._runtime_log_view_style()
+            if getattr(self, "_applied_runtime_log_view_style", None) != log_view_style:
+                self.runtime_log_view.setStyleSheet(log_view_style)
+                self._applied_runtime_log_view_style = log_view_style
 
         self._sync_runtime_log_level_combo()
 

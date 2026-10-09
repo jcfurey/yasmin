@@ -196,6 +196,17 @@ class StateMachine(State):
         else:
             self.transitions.pop(state_name, None)
 
+    def remove_child_state_outcome(self, state_name: str, outcome: str) -> None:
+        """Remove the transitions that leave one child state through *outcome*."""
+        transitions = self.transitions.get(state_name)
+        if not transitions:
+            return
+        self.transitions[state_name] = [
+            transition
+            for transition in transitions
+            if transition.source_outcome != outcome
+        ]
+
     def remove_outcome(self, name: str) -> None:
         """Remove a final outcome and all related transitions."""
         self.outcomes = [outcome for outcome in self.outcomes if outcome.name != name]

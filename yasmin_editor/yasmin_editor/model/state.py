@@ -38,6 +38,7 @@ class State:
     class_name: Union[str, None] = None
     package_name: Union[str, None] = None
     file_name: Union[str, None] = None
+    file_path: Union[str, None] = None
 
     def add_key(self, key: Key) -> None:
         """Add a blackboard key to the state."""
@@ -93,6 +94,8 @@ class State:
             meta.append(f"package={self.package_name}")
         if self.file_name:
             meta.append(f"file={self.file_name}")
+        if self.file_path:
+            meta.append(f"path={self.file_path}")
         if meta:
             parts.append(f"({', '.join(meta)})")
         return " ".join(parts)

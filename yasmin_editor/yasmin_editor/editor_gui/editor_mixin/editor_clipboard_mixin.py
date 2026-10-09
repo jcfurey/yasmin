@@ -576,10 +576,9 @@ class EditorClipboardMixin:
             )
             return
         extracted_model = StateMachine(name=container_name)
-        if bundle.outcomes:
-            for outcome_name in bundle.outcomes:
-                extracted_model.add_outcome(Outcome(name=outcome_name))
-        else:
+        # The selected final outcomes are pasted (with their placements) below;
+        # adding them here first would make the paste rename them ("done2").
+        if not bundle.outcomes:
             extracted_model.add_outcome(Outcome(name="done"))
         paste_bundle_into_model(extracted_model, bundle, 0.0, 0.0)
         min_x, min_y, _max_x, _max_y = get_bundle_bounds(bundle)

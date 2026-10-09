@@ -120,7 +120,8 @@ def test_parameter_overwrite_queries_include_parent_metadata():
 
 
 def test_apply_parameter_overwrites_updates_child_mappings_and_prunes_unused_parent_parameters():
-    """Applying overwrite rows should preserve order and remove unused declarations."""
+    """Applying overwrite rows should preserve order and remove only the
+    declarations this child released (unreferenced XML declarations stay)."""
 
     first_child = State(name="worker", parameter_mappings={"speed_local": "speed"})
     second_child = State(name="helper", parameter_mappings={"mode_local": "mode"})
@@ -175,6 +176,7 @@ def test_apply_parameter_overwrites_updates_child_mappings_and_prunes_unused_par
         (parameter.name, parameter.default_value) for parameter in container.parameters
     ] == [
         ("mode", "manual"),
+        ("unused", 1),
         ("new_param", 0.1),
     ]
 

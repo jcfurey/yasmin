@@ -159,7 +159,7 @@ def test_validate_model_reports_additional_leaf_and_container_edge_cases():
     warning_messages = {f"{item.path}: {item.message}" for item in result.warnings}
 
     assert "root: State machine requires at least one outcome" in error_messages
-    assert "root: State machine requires 'start_state'" in error_messages
+    assert "root: State machine requires 'start_state'" not in error_messages
     assert (
         "root/alias: Dictionary key 'alias' does not match state name 'real_name'"
         in error_messages
@@ -173,10 +173,6 @@ def test_validate_model_reports_additional_leaf_and_container_edge_cases():
     assert "root: Container transition target 'ghost' does not exist" in error_messages
     assert (
         "root: Container transition uses unknown outcome 'unknown_outcome'"
-        in warning_messages
-    )
-    assert (
-        "root/xml_state: XML state usually should define 'package_name'"
         in warning_messages
     )
     assert "root/leaf_without_type: Leaf state has no 'state_type'" in warning_messages

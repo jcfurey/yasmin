@@ -16,22 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-
-@pytest.fixture(scope="session")
-def qapp():
-    pytest.importorskip("yasmin_editor.qt_compat")
-    from yasmin_editor.qt_compat import QtWidgets
-
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        app = QtWidgets.QApplication(["pytest", "-platform", "offscreen"])
-    app.setQuitOnLastWindowClosed(False)
-    yield app

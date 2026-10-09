@@ -831,7 +831,16 @@ class EditorModelMixin:
             self.delete_connection_item(connection)
 
         self.final_outcomes.pop(outcome_node.instance_id, None)
-        self.current_container_model.remove_outcome(outcome_node.name)
+        container_model = self.current_container_model
+        container_model.remove_outcome(outcome_node.name)
+        # The container no longer produces this outcome, so the parent must not
+        # keep transitions (or outcome-map rules) that leave through it.
+        parent_model = self.current_parent_model
+        if parent_model is not None:
+            parent_model.remove_child_state_outcome(
+                container_model.name,
+                outcome_node.name,
+            )
         self.canvas.scene.removeItem(outcome_node)
         self.update_start_state_combo()
         self.refresh_connection_port_visibility()
@@ -876,11 +885,24 @@ class EditorModelMixin:
     def add_join_state_to_container(self) -> None:
         self.add_join_state()
 
+    @staticmethod
+    def _format_validation_messages(messages) -> List[str]:
+        return [
+            f"- {item.path}: {item.message}" if item.path else f"- {item.message}"
+            for item in messages
+        ]
+
     def _confirm_save_despite_validation_errors(self) -> bool:
-        """Ask the user whether the state machine should still be saved."""
+        """Ask the user whether the state machine should still be saved.
+
+        Errors block saving unless the user confirms; warnings are listed in
+        the same dialog, or shown in the status bar when there are no errors.
+        """
 
         validation = validate_model(self.root_model)
-        errors = [f"- {item.message}" for item in validation.errors]
+        errors = self._format_validation_messages(validation.errors)
+        warnings = self._format_validation_messages(validation.warnings)
+        self.last_validation_result = validation
         if not errors:
             return True
 
@@ -888,6 +910,8 @@ class EditorModelMixin:
             "Cannot save state machine. Please fix the following issues:\n\n"
             + "\n".join(errors)
         )
+        if warnings:
+            error_msg += "\n\nWarnings:\n" + "\n".join(warnings)
         reply = QtWidgets.QMessageBox.critical(
             self,
             "Validation Errors",
@@ -937,7 +961,17 @@ class EditorModelMixin:
             self.register_recent_file(file_path)
         except Exception:
             pass
-        self.statusBar().showMessage(f"Saved: {file_path}", 3000)
+        warnings = self._format_validation_messages(
+            getattr(getattr(self, "last_validation_result", None), "warnings", [])
+        )
+        if warnings:
+            self.statusBar().showMessage(
+                f"Saved: {file_path} with {len(warnings)} validation warning(s): "
+                + "; ".join(item[2:] for item in warnings),
+                10000,
+            )
+        else:
+            self.statusBar().showMessage(f"Saved: {file_path}", 3000)
         return True
 
     def save_state_machine(self) -> bool:
