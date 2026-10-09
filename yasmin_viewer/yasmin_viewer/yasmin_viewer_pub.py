@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Any, Dict, List, Set
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 import rclpy
 import yasmin
@@ -67,11 +68,15 @@ class YasminViewerPub(object):
         ## The finite state machine to be published.
         self._fsm: StateMachine = fsm
 
-        ## The publisher for the state machine messages.
-        self._pub = self._node.create_publisher(StateMachineMsg, "/fsm_viewer", 10)
+        ## The publisher for the state machine messages. Relative, so a
+        ## namespaced robot publishes to its own <ns>/fsm_viewer.
+        self._pub = self._node.create_publisher(StateMachineMsg, "fsm_viewer", 10)
 
-        ## A timer to periodically publish the FSM state.
-        self._timer = self._node.create_timer(1 / rate, self._publish_data)
+        ## A timer to periodically publish the FSM state. Steady time keeps the
+        ## viewer updating while simulated time is paused, as in C++.
+        self._timer = self._node.create_timer(
+            1 / rate, self._publish_data, clock=Clock(clock_type=ClockType.STEADY_TIME)
+        )
 
     def shutdown(self) -> None:
         if self._timer is not None:

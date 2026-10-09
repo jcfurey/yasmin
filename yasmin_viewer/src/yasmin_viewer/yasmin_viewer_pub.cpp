@@ -57,9 +57,10 @@ YasminViewerPub::YasminViewerPub(const rclcpp::Node::SharedPtr &node,
     this->fsm_name = this->fsm->get_name();
   }
 
+  // Relative, so a namespaced robot publishes to its own <ns>/fsm_viewer.
   this->publisher =
       this->node_->create_publisher<yasmin_msgs::msg::StateMachine>(
-          "/fsm_viewer", 10);
+          "fsm_viewer", 10);
 
   this->timer = this->node_->create_wall_timer(
       std::chrono::duration<double>(1.0 / rate_hz),

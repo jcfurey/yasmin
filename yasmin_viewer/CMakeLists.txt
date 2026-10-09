@@ -9,6 +9,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(Boost REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(yasmin REQUIRED)
 find_package(yasmin_ros REQUIRED)
@@ -31,6 +32,7 @@ set(DEPENDENCIES
 set(DEPENDENCIES_PACKAGE
   ament_index_cpp
   rclcpp
+  rclcpp_components
   rclpy
   yasmin
   yasmin_ros
@@ -44,20 +46,28 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 target_link_libraries(${PROJECT_NAME} PUBLIC ${DEPENDENCIES})
 
-add_executable(yasmin_viewer_node
-  src/yasmin_viewer/main.cpp
+# Viewer node as a component, so it can run in a component container
+add_library(yasmin_viewer_node_component SHARED
   src/yasmin_viewer/yasmin_viewer_node.cpp
 )
-target_include_directories(yasmin_viewer_node PUBLIC
+target_include_directories(yasmin_viewer_node_component PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
 )
-target_link_libraries(yasmin_viewer_node PUBLIC
+target_link_libraries(yasmin_viewer_node_component PUBLIC
   ament_index_cpp::ament_index_cpp
   rclcpp::rclcpp
+  rclcpp_components::component
   ${yasmin_msgs_TARGETS}
   ${Boost_LIBRARIES}
 )
+rclcpp_components_register_nodes(yasmin_viewer_node_component
+  "yasmin_viewer::YasminViewerNode")
+
+add_executable(yasmin_viewer_node
+  src/yasmin_viewer/main.cpp
+)
+target_link_libraries(yasmin_viewer_node PUBLIC yasmin_viewer_node_component)
 
 ament_python_install_package(${PROJECT_NAME})
 
@@ -66,6 +76,12 @@ install(TARGETS ${PROJECT_NAME} yasmin_viewer_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS yasmin_viewer_node_component
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 install(DIRECTORY include/

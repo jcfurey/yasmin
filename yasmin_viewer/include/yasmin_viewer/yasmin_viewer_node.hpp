@@ -47,8 +47,13 @@ public:
   /**
    * @brief Constructs the YasminViewerNode and initializes subscriptions,
    * parameters, and the web server.
+   *
+   * Also registered as the component `yasmin_viewer::YasminViewerNode`.
+   *
+   * @param options Node options, e.g. from a component container.
    */
-  YasminViewerNode();
+  explicit YasminViewerNode(
+      const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
   /**
    * @brief Destroys the YasminViewerNode and stops the web server.

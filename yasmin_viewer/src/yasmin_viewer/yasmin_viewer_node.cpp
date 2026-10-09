@@ -236,8 +236,8 @@ void handle_session(beast::tcp_stream stream, YasminViewerNode *node) {
 
 } // namespace
 
-YasminViewerNode::YasminViewerNode()
-    : Node("yasmin_viewer"), port_(5000), max_age_seconds_(3.0),
+YasminViewerNode::YasminViewerNode(const rclcpp::NodeOptions &options)
+    : Node("yasmin_viewer", options), port_(5000), max_age_seconds_(3.0),
       server_running_(false) {
   this->declare_parameter<std::string>("host", "0.0.0.0");
   this->declare_parameter<int64_t>("port", 5000);
@@ -259,8 +259,10 @@ YasminViewerNode::YasminViewerNode()
       ament_index_cpp::get_package_share_directory("yasmin_viewer") + "/web";
 #endif
 
+  // Relative: launch the viewer in a robot's namespace (or remap the topic)
+  // to show the state machines of that namespace.
   this->fsm_sub_ = this->create_subscription<StateMachineMsg>(
-      "/fsm_viewer", 10,
+      "fsm_viewer", 10,
       std::bind(&YasminViewerNode::fsm_viewer_cb, this, std::placeholders::_1));
 
   this->start_server();
@@ -516,3 +518,6 @@ YasminViewerNode::state_machine_to_json(const StateMachineMsg &msg) {
 }
 
 } // namespace yasmin_viewer
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(yasmin_viewer::YasminViewerNode)
