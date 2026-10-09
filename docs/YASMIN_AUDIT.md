@@ -69,7 +69,21 @@ Verification: all affected packages and their dependencies built in Debug mode w
 
 Build, install, and test artifacts are under `/tmp/yasmin-audit`. ROS tests used localhost discovery and domain 177. `git diff --check` passed. Older ROS/PCL versions and a real sensor/bag-to-publisher pipeline have not been verified in this batch.
 
-Next work: **L04** signal handling; **R05–R07** C++ action/service cleanup and condition-variable synchronization; **R08–R09** Python node shutdown and TF clock ownership; **P04** a Python/native cloud bridge; completion of **L07/P02/P03**; then **S01–S04** sensor QoS, composition/callback contracts, and viewer namespacing.
+## Implementation progress — C++ client cleanup (2026-10-09)
+
+Commit `56719da2` addresses **R05–R07**. Across both batches, **12 findings are fixed, 4 are partially addressed, and 8 remain open**. R06 remains partial because legacy rclcpp releases do not expose the required cleanup API.
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| R05 | Fixed | Each C++ action execution retains its own goal handle, completion state, and cancellation intent. Response timeout requests remote cancellation. Acceptance arriving after cancellation, timeout, reuse, or state destruction still triggers cancellation. Local cancellation wakes the waiter without waiting for the server's acknowledgment. Old result callbacks cannot complete a later execution. Feedback for abandoned goals is suppressed, and a new goal waits for an in-flight feedback handler to finish. |
+| R06 | Partial | A scope guard retains the returned service request and removes only that invocation's pending entry on timeout, cancellation, or exception where rclcpp exposes `remove_pending_request()`. A regression preserves an unrelated request on the same cached client; another cancels and reuses a state 20 times with no pending entries retained. Foxy lacks a public removal API; feature detection retains compilation compatibility but cannot provide cleanup there. Older distributions have not been built or tested. See the primary [Foxy client implementation](https://github.com/ros2/rclcpp/blob/foxy/rclcpp/include/rclcpp/client.hpp). |
+| R07 | Fixed | Action completion/rejection and all three states' cancellation transitions use the corresponding wait mutex. Monitor timed waits use a predicate, including cancellation already requested before waiting. Discovery runs outside the wait mutex so cancellation can interrupt polling. User request/goal/result handlers run outside it and may cancel their own state. Tests cover fast responses/rejections, cancellation and reuse, pre-canceled monitors, absent endpoints, and cancellation from user handlers. The narrow check-to-sleep race is prevented by synchronization; it is not forced with instrumentation. |
+
+Cancellation is a request to the remote action server, which may reject it or be unavailable. The local outcome does not wait for remote termination. Service request cleanup releases client bookkeeping and cannot undo side effects already executing on the server. Delayed goal acceptance still requires the owning action client and executor to remain available to process that callback. Feedback handlers must return promptly: rclcpp can hold its client mutex during them, delaying cancellation dispatch. Execution reuse waits for an in-flight feedback handler to finish.
+
+Regression source: [C++ client cleanup and waits](../yasmin_ros/test/test_client_cleanup.cpp). All 17 new cases passed on ROS 2 Lyrical. The affected packages and their dependencies rebuilt successfully in Debug mode. The complete ROS suite (96 cases) and factory suite (53 cases) passed after the final change. Together with the unchanged first-batch core (241) and PCL (46) results, **436 individual cases passed with zero errors, failures, or skips**. `colcon test-result` reports 484 records, including 48 CTest wrapper entries. Final ROS/factory logs are under `/tmp/yasmin-audit/test-log-final-handoff`. `git diff --check` passed.
+
+Next work: **L04** signal handling; **R08–R09** Python node shutdown and TF clock ownership; **P04** a Python/native cloud bridge; completion of **L07/P02/P03** and legacy **R06** cleanup; then **S01–S04** sensor QoS, composition/callback contracts, and viewer namespacing.
 
 ## Findings inventory
 
