@@ -98,8 +98,8 @@ protected:
                           yasmin::Blackboard::SharedPtr blackboard,
                           const rclcpp::Publisher<PointCloud2>::SharedPtr &pub,
                           const RosPointCloud2Ptr &cloud) {
-    auto result = std::async(std::launch::async,
-                             [&]() { return state(blackboard); });
+    auto result =
+        std::async(std::launch::async, [&]() { return state(blackboard); });
     while (result.wait_for(50ms) != std::future_status::ready) {
       pub->publish(*cloud);
     }
@@ -113,8 +113,8 @@ protected:
 };
 
 TEST_F(TestPointCloud2TopicStates, MonitorReceivesBestEffortCloud) {
-  auto pub = node_->create_publisher<PointCloud2>("cloud_in",
-                                                  rclcpp::SensorDataQoS());
+  auto pub =
+      node_->create_publisher<PointCloud2>("cloud_in", rclcpp::SensorDataQoS());
   PointCloud2MonitorState state;
   state.set_parameter<std::string>("topic", "cloud_in");
   // Python-style parameter types are accepted.
@@ -143,8 +143,8 @@ TEST_F(TestPointCloud2TopicStates, CancelWakesWaitingMonitor) {
   state.set_parameter<std::string>("topic", "cloud_never");
   state.configure();
   auto blackboard = yasmin::Blackboard::make_shared();
-  auto result = std::async(std::launch::async,
-                           [&]() { return state(blackboard); });
+  auto result =
+      std::async(std::launch::async, [&]() { return state(blackboard); });
   ASSERT_TRUE(wait_until([&]() { return state.is_running(); }));
   state.cancel_state();
   ASSERT_EQ(result.wait_for(1s), std::future_status::ready);
@@ -169,16 +169,15 @@ TEST_F(TestPointCloud2TopicStates, WaitForNewMessageDiscardsQueuedCloud) {
   state.configure();
   ASSERT_EQ(run_monitor(state, blackboard, pub, cloud_with_x(3.0F)),
             "succeeded");
-  EXPECT_FLOAT_EQ(
-      first_x(*blackboard->get<RosPointCloud2Ptr>("output_cloud")), 3.0F);
+  EXPECT_FLOAT_EQ(first_x(*blackboard->get<RosPointCloud2Ptr>("output_cloud")),
+                  3.0F);
 }
 
 TEST_F(TestPointCloud2TopicStates, PublisherReachesReliableAndBestEffort) {
   std::atomic_int reliable{0};
   std::atomic_int best_effort{0};
   auto reliable_sub = node_->create_subscription<PointCloud2>(
-      "cloud_out", rclcpp::QoS(10).reliable(),
-      [&](PointCloud2::SharedPtr msg) {
+      "cloud_out", rclcpp::QoS(10).reliable(), [&](PointCloud2::SharedPtr msg) {
         if (first_x(*msg) == 7.0F) {
           ++reliable;
         }
@@ -196,8 +195,8 @@ TEST_F(TestPointCloud2TopicStates, PublisherReachesReliableAndBestEffort) {
   auto blackboard = yasmin::Blackboard::make_shared();
   // Serialized bytes, as a Python state would store them.
   blackboard->set<yasmin_pcl::common::SerializedCloud>(
-      "input_cloud", yasmin_ros::serialize_interface<PointCloud2>(
-                         *cloud_with_x(7.0F)));
+      "input_cloud",
+      yasmin_ros::serialize_interface<PointCloud2>(*cloud_with_x(7.0F)));
   EXPECT_TRUE(wait_until([&]() {
     EXPECT_EQ(state(blackboard), "succeeded");
     return reliable.load() > 0 && best_effort.load() > 0;

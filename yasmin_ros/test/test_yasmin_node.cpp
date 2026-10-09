@@ -63,8 +63,8 @@ TEST_F(TestYasminNode, NodeOptionsAreApplied) {
 TEST_F(TestYasminNode, CustomContextIsSpun) {
   auto context = std::make_shared<rclcpp::Context>();
   context->init(0, nullptr);
-  auto node = YasminNode::get_instance(
-      "custom_context", rclcpp::NodeOptions().context(context));
+  auto node = YasminNode::get_instance("custom_context",
+                                       rclcpp::NodeOptions().context(context));
   EXPECT_EQ(node->get_node_base_interface()->get_context(), context);
 
   std::atomic_bool fired{false};
@@ -84,8 +84,8 @@ TEST_F(TestYasminNode, CustomContextIsSpun) {
 
 TEST_F(TestYasminNode, RejectsUninitializedCustomContext) {
   auto context = std::make_shared<rclcpp::Context>();
-  EXPECT_THROW(YasminNode::get_instance(
-                   "uninitialized", rclcpp::NodeOptions().context(context)),
+  EXPECT_THROW(YasminNode::get_instance("uninitialized",
+                                        rclcpp::NodeOptions().context(context)),
                std::invalid_argument);
 }
 

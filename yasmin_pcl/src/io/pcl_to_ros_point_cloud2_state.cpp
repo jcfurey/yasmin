@@ -59,11 +59,9 @@ PclToRosPointCloud2State::PclToRosPointCloud2State()
 }
 
 void PclToRosPointCloud2State::configure() {
-  const auto output_format =
-      this->get_parameter<std::string>("output_format");
+  const auto output_format = this->get_parameter<std::string>("output_format");
   if (output_format != "pointer" && output_format != "serialized") {
-    throw std::invalid_argument("Unsupported output_format '" +
-                                output_format +
+    throw std::invalid_argument("Unsupported output_format '" + output_format +
                                 "'; expected 'pointer' or 'serialized'");
   }
   this->serialized_output_ = output_format == "serialized";

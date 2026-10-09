@@ -100,5 +100,4 @@ PointCloud2PublisherState::execute(yasmin::Blackboard::SharedPtr blackboard) {
 
 } // namespace yasmin_pcl::io
 
-PLUGINLIB_EXPORT_CLASS(yasmin_pcl::io::PointCloud2PublisherState,
-                       yasmin::State)
+PLUGINLIB_EXPORT_CLASS(yasmin_pcl::io::PointCloud2PublisherState, yasmin::State)

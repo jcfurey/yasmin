@@ -523,9 +523,7 @@ class TestStateMachineCancelBehavior(unittest.TestCase):
                 super().cancel_state()
 
         sm = StateMachine(outcomes=["done"], handle_sigint=True)
-        sm.add_state(
-            "FIRST", PythonCancelState(entered), transitions={"done": "done"}
-        )
+        sm.add_state("FIRST", PythonCancelState(entered), transitions={"done": "done"})
 
         def run_state_machine():
             result["thread"] = threading.get_ident()

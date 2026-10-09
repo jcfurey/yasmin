@@ -46,9 +46,9 @@ PointCloud2MonitorState::PointCloud2MonitorState(
   this->set_outcome_description(outcomes::TIMEOUT,
                                 "No cloud arrived within 'timeout_sec'.");
   this->set_outcome_description(outcomes::CANCEL, "The state was canceled.");
-  this->add_output_key(
-      "output_cloud",
-      "Received cloud stored as std::shared_ptr<sensor_msgs::msg::PointCloud2>.");
+  this->add_output_key("output_cloud",
+                       "Received cloud stored as "
+                       "std::shared_ptr<sensor_msgs::msg::PointCloud2>.");
   this->declare_parameter<std::string>(
       "topic", "Topic to subscribe to (relative names follow the namespace).",
       "");
@@ -81,7 +81,8 @@ void PointCloud2MonitorState::configure() {
   const auto qos_name = this->get_parameter<std::string>("qos");
   const int depth = this->get_parameter<int>("queue_size");
   this->timeout_sec_ = this->get_parameter<double>("timeout_sec");
-  this->wait_for_new_message_ = this->get_parameter<bool>("wait_for_new_message");
+  this->wait_for_new_message_ =
+      this->get_parameter<bool>("wait_for_new_message");
 
   if (this->subscription_ && topic == this->subscribed_topic_ &&
       qos_name == this->subscribed_qos_ && depth == this->subscribed_depth_) {

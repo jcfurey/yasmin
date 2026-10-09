@@ -28,7 +28,10 @@ from yasmin import State, Blackboard
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL, TIMEOUT
 from yasmin_ros.ros_clients_cache import ROSClientsCache
 from yasmin_ros.ros_state_utils import (
-    resolve_node, wait_with_retry, wait_for_server_with_retry, setup_outcomes,
+    resolve_node,
+    wait_with_retry,
+    wait_for_server_with_retry,
+    setup_outcomes,
 )
 
 
@@ -153,7 +156,9 @@ class ActionState(State):
             try:
                 goal_handle.cancel_goal_async()
             except Exception as error:
-                yasmin.YASMIN_LOG_WARN(f"Failed to cancel action '{self._action_name}': {error}")
+                yasmin.YASMIN_LOG_WARN(
+                    f"Failed to cancel action '{self._action_name}': {error}"
+                )
 
     def cancel_state(self) -> None:
         """Wake the local wait immediately and request remote cancellation."""
@@ -202,8 +207,11 @@ class ActionState(State):
         yasmin.YASMIN_LOG_INFO(f"Sending goal to action '{self._action_name}'")
 
         def feedback_handler(feedback):
-            if (self._execution is execution and not execution.cancel_requested
-                    and self._feedback_handler is not None):
+            if (
+                self._execution is execution
+                and not execution.cancel_requested
+                and self._feedback_handler is not None
+            ):
                 self._feedback_handler(blackboard, feedback.feedback)
 
         send_goal_future = self._action_client.send_goal_async(
@@ -246,7 +254,9 @@ class ActionState(State):
 
         return ABORT
 
-    def _goal_response_callback(self, future: Future, execution: _ActionExecution) -> None:
+    def _goal_response_callback(
+        self, future: Future, execution: _ActionExecution
+    ) -> None:
         try:
             goal_handle = future.result()
             with self._goal_handle_lock:

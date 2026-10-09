@@ -72,6 +72,7 @@ def wait_for_server_with_retry(
     cancel_check: Callable[[], bool],
 ) -> Optional[str]:
     """Wait in short slices, preserving the timeout budget for each retry."""
+
     def attempt():
         deadline = None if timeout is None else monotonic() + max(0.0, timeout)
         while not cancel_check():

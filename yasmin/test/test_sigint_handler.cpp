@@ -36,7 +36,7 @@ namespace {
 
 std::atomic_int previous_handler_calls{0};
 std::atomic_int top_handler_calls{0};
-struct sigaction top_handler_previous{};
+struct sigaction top_handler_previous {};
 
 extern "C" void counting_handler(int) { ++previous_handler_calls; }
 
@@ -60,7 +60,7 @@ bool wait_for(const std::function<bool()> &condition,
 }
 
 bool sigint_handler_is(void (*handler)(int)) {
-  struct sigaction current{};
+  struct sigaction current {};
   sigaction(SIGINT, nullptr, &current);
   return !(current.sa_flags & SA_SIGINFO) && current.sa_handler == handler;
 }
@@ -100,7 +100,7 @@ protected:
   void SetUp() override {
     previous_handler_calls = 0;
     top_handler_calls = 0;
-    struct sigaction action{};
+    struct sigaction action {};
     action.sa_handler = counting_handler;
     sigemptyset(&action.sa_mask);
     sigaction(SIGINT, &action, &original_action_);
@@ -115,7 +115,7 @@ protected:
     return sm;
   }
 
-  struct sigaction original_action_{};
+  struct sigaction original_action_ {};
 };
 
 } // namespace
@@ -195,7 +195,7 @@ TEST_F(TestSigintHandler, HandlerInstalledLaterKeepsItsChain) {
   auto result = std::async(std::launch::async, [&]() { return (*sm)(); });
   ASSERT_TRUE(wait_for([&]() { return state->entered.load(); }));
 
-  struct sigaction top{};
+  struct sigaction top {};
   top.sa_sigaction = top_handler;
   top.sa_flags = SA_SIGINFO;
   sigemptyset(&top.sa_mask);
@@ -205,7 +205,7 @@ TEST_F(TestSigintHandler, HandlerInstalledLaterKeepsItsChain) {
   EXPECT_THROW(result.get(), StateMachineCancelException);
   const int direct_cancels = state->cancel_calls.load();
 
-  struct sigaction current{};
+  struct sigaction current {};
   sigaction(SIGINT, nullptr, &current);
   EXPECT_EQ(current.sa_sigaction, top_handler);
 

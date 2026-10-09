@@ -95,7 +95,8 @@ TEST(SavePlyState, PacksPaddedRowsBeforeWriting) {
     ASSERT_EQ(state(blackboard), "succeeded") << mode;
 
     pcl::PCLPointCloud2 loaded;
-    ASSERT_GE(pcl::io::loadPLYFile(temp_file.path().string(), loaded), 0) << mode;
+    ASSERT_GE(pcl::io::loadPLYFile(temp_file.path().string(), loaded), 0)
+        << mode;
     const auto xyz = yasmin_pcl::test::to_xyz_cloud(loaded);
     ASSERT_EQ(xyz.points.size(), 6U) << mode;
     for (std::size_t i = 0; i < xyz.points.size(); ++i) {

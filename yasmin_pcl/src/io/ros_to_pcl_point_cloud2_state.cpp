@@ -55,8 +55,7 @@ RosToPclPointCloud2State::RosToPclPointCloud2State()
 std::string
 RosToPclPointCloud2State::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
-    const auto input_cloud =
-        common::get_ros_cloud(*blackboard, "input_cloud");
+    const auto input_cloud = common::get_ros_cloud(*blackboard, "input_cloud");
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input ROS point cloud pointer is null");
@@ -67,7 +66,8 @@ RosToPclPointCloud2State::execute(yasmin::Blackboard::SharedPtr blackboard) {
     auto output_cloud = common::make_pcl_point_cloud2();
     pcl_conversions::toPCL(*input_cloud, *output_cloud);
     blackboard->set<common::PclPointCloud2Ptr>("output_cloud", output_cloud);
-    blackboard->set<std_msgs::msg::Header>("output_header", input_cloud->header);
+    blackboard->set<std_msgs::msg::Header>("output_header",
+                                           input_cloud->header);
 
     return "succeeded";
   } catch (const std::exception &e) {

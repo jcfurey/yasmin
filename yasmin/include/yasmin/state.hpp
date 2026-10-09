@@ -50,8 +50,8 @@ template <typename T, typename S> bool integer_in_range(S value) {
     return value >= 0 && static_cast<std::make_unsigned_t<S>>(value) <=
                              std::numeric_limits<T>::max();
   } else {
-    return value <= static_cast<std::make_unsigned_t<T>>(
-                        std::numeric_limits<T>::max());
+    return value <=
+           static_cast<std::make_unsigned_t<T>>(std::numeric_limits<T>::max());
   }
 }
 
@@ -68,8 +68,7 @@ bool try_convert_parameter(const Blackboard &parameters,
       throw std::invalid_argument("Parameter '" + name +
                                   "' must be an integer, got '" + type + "'");
     } else if (!integer_in_range<T>(value)) {
-      throw std::out_of_range("Parameter '" + name +
-                              "' is out of range for '" +
+      throw std::out_of_range("Parameter '" + name + "' is out of range for '" +
                               demangle_type(typeid(T).name()) + "'");
     }
   }

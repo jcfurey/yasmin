@@ -141,8 +141,8 @@ TEST_F(TestTfBufferState, TestBufferIsReusedAcrossExecutions) {
   state->configure();
 
   ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
-  const auto first = blackboard->get<std::shared_ptr<tf2_ros::Buffer>>(
-      "tf_buffer");
+  const auto first =
+      blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
   EXPECT_EQ(blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer"),
             first);
@@ -161,8 +161,7 @@ TEST_F(TestTfBufferState, TestBufferSupportsWaitForTransform) {
   state->configure();
   ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
 
-  auto buffer =
-      blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
+  auto buffer = blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   // Throws CreateTimerInterfaceException without a timer interface.
   EXPECT_NO_THROW(buffer->waitForTransform(
       "map", "base_link", tf2::TimePointZero, std::chrono::milliseconds(10),
@@ -177,9 +176,8 @@ TEST_F(TestTfBufferState, TestListenerKeepsItsBufferAlive) {
 
   std::weak_ptr<tf2_ros::Buffer> buffer =
       blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
-  auto listener =
-      blackboard->get<std::shared_ptr<tf2_ros::TransformListener>>(
-          "tf_listener");
+  auto listener = blackboard->get<std::shared_ptr<tf2_ros::TransformListener>>(
+      "tf_listener");
   blackboard->remove("tf_buffer");
   state.reset();
 

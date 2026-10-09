@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #include <cstring>
+#include <gtest/gtest.h>
 #include <stdexcept>
 #include <string>
-#include <gtest/gtest.h>
 
 #include "test_utils.hpp"
 #include "yasmin/blackboard.hpp"
@@ -133,22 +133,25 @@ std::size_t point_count(const yasmin_pcl::common::PclPointCloud2Ptr &cloud) {
 } // namespace
 
 TEST(RosToPclPointCloud2State, AcceptsSerializedAndByValueClouds) {
-  const auto cloud = yasmin_pcl::test::create_ros_cloud_ptr({{1, 2, 3}, {4, 5, 6}});
+  const auto cloud =
+      yasmin_pcl::test::create_ros_cloud_ptr({{1, 2, 3}, {4, 5, 6}});
   for (int representation = 0; representation < 2; ++representation) {
     auto blackboard = yasmin::Blackboard::make_shared();
     if (representation == 0) {
       // How Python stores rclpy.serialization.serialize_message(cloud).
       blackboard->set<yasmin_pcl::common::SerializedCloud>(
           "input_cloud",
-          yasmin_ros::serialize_interface<sensor_msgs::msg::PointCloud2>(*cloud));
+          yasmin_ros::serialize_interface<sensor_msgs::msg::PointCloud2>(
+              *cloud));
     } else {
       blackboard->set<sensor_msgs::msg::PointCloud2>("input_cloud", *cloud);
     }
     yasmin_pcl::io::RosToPclPointCloud2State state;
     ASSERT_EQ(state(blackboard), "succeeded") << representation;
-    EXPECT_EQ(point_count(blackboard->get<yasmin_pcl::common::PclPointCloud2Ptr>(
-                  "output_cloud")),
-              2U);
+    EXPECT_EQ(
+        point_count(blackboard->get<yasmin_pcl::common::PclPointCloud2Ptr>(
+            "output_cloud")),
+        2U);
   }
 }
 
@@ -161,7 +164,8 @@ TEST(RosToPclPointCloud2State, RejectsUnsupportedAndMalformedInputs) {
     if (mutation == 0) {
       blackboard->set<std::string>("input_cloud", "not a cloud");
     } else {
-      blackboard->set<yasmin_pcl::common::SerializedCloud>("input_cloud", bytes);
+      blackboard->set<yasmin_pcl::common::SerializedCloud>("input_cloud",
+                                                           bytes);
     }
     yasmin_pcl::io::RosToPclPointCloud2State state;
     EXPECT_EQ(state(blackboard), "aborted") << mutation;

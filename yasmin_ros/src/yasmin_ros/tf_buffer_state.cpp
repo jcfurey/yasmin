@@ -106,19 +106,19 @@ std::string TfBufferState::execute(yasmin::Blackboard::SharedPtr blackboard) {
       };
       auto owner = std::make_shared<ListenerOwner>();
       owner->buffer = tf_buffer;
-      owner->listener = std::make_shared<tf2_ros::TransformListener>(
-          *tf_buffer,
+      owner->listener =
+          std::make_shared<tf2_ros::TransformListener>(*tf_buffer,
 #if __has_include("rclcpp/version.h")
 #include "rclcpp/version.h"
 #if RCLCPP_VERSION_GTE(33, 0, 2)
-          *this->node_,
+                                                       *this->node_,
 #else
-          this->node_,
+                                                       this->node_,
 #endif
 #else
-          this->node_,
+                                                       this->node_,
 #endif
-          false);
+                                                       false);
       this->tf_listener_ = std::shared_ptr<tf2_ros::TransformListener>(
           owner, owner->listener.get());
       this->tf_buffer_ = std::move(tf_buffer);

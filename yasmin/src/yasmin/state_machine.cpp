@@ -81,7 +81,7 @@ std::atomic<int> sigint_pipe_write_fd{-1};
 std::atomic<bool> sigint_active{false};
 std::atomic<bool> sigint_pending{false};
 std::atomic<unsigned char> sigint_generation{0};
-struct sigaction previous_sigint_action{};
+struct sigaction previous_sigint_action {};
 
 static_assert(std::atomic<int>::is_always_lock_free &&
                   std::atomic<bool>::is_always_lock_free &&
@@ -102,8 +102,7 @@ void forward_sigint(int signum, siginfo_t *info, void *context,
       signal(signum, SIG_DFL);
       raise(signum);
     }
-  } else if (previous.sa_handler != SIG_IGN &&
-             previous.sa_handler != nullptr) {
+  } else if (previous.sa_handler != SIG_IGN && previous.sa_handler != nullptr) {
     previous.sa_handler(signum);
   }
 }
@@ -192,7 +191,7 @@ int register_sigint_callback(std::function<void()> cb) {
     start_sigint_dispatcher(registry);
   }
   if (!registry.handler_installed) {
-    struct sigaction sigint_action{};
+    struct sigaction sigint_action {};
     sigint_action.sa_sigaction = sigint_handler;
     sigemptyset(&sigint_action.sa_mask);
     sigint_action.sa_flags = SA_SIGINFO;
@@ -227,7 +226,7 @@ void unregister_sigint_callback(int id) {
   // Restore the previous action only if this handler is still the installed
   // one. Otherwise a handler installed later chains here and would lose its
   // own predecessor; stay in place as a pass-through instead.
-  struct sigaction current{};
+  struct sigaction current {};
   if (sigaction(SIGINT, nullptr, &current) == 0 &&
       (current.sa_flags & SA_SIGINFO) &&
       current.sa_sigaction == sigint_handler) {

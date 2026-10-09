@@ -71,8 +71,8 @@ inline RosPointCloud2Ptr get_ros_cloud(const yasmin::Blackboard &blackboard,
         "' holds a Python object; C++ states read a PointCloud2 stored as "
         "rclpy.serialization.serialize_message(cloud)");
   }
-  throw std::invalid_argument("Blackboard key '" + key + "' has type '" +
-                              type + "', which is not a PointCloud2");
+  throw std::invalid_argument("Blackboard key '" + key + "' has type '" + type +
+                              "', which is not a PointCloud2");
 }
 
 } // namespace yasmin_pcl::common

@@ -112,10 +112,9 @@ void OrthogonalState::configure() {
         JoinState *js = dynamic_cast<JoinState *>(inner);
         if (js) {
           if (!region_sync_ids.insert(js->get_sync_id()).second) {
-            throw std::invalid_argument(
-                "Region '" + region.name +
-                "' contains multiple JoinStates for '" + js->get_sync_id() +
-                "'");
+            throw std::invalid_argument("Region '" + region.name +
+                                        "' contains multiple JoinStates for '" +
+                                        js->get_sync_id() + "'");
           }
           join_groups[js->get_sync_id()].push_back({i, js});
         }

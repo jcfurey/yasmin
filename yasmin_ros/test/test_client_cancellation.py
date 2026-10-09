@@ -46,9 +46,16 @@ def start(state):
 
 
 def action_state(client, **kwargs):
-    with patch.object(ROSClientsCache, "get_or_create_action_client", return_value=client):
-        return ActionState(Fibonacci, "action", lambda _: Fibonacci.Goal(),
-                           node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)), **kwargs)
+    with patch.object(
+        ROSClientsCache, "get_or_create_action_client", return_value=client
+    ):
+        return ActionState(
+            Fibonacci,
+            "action",
+            lambda _: Fibonacci.Goal(),
+            node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)),
+            **kwargs
+        )
 
 
 def goal_handle():
@@ -101,13 +108,15 @@ def test_old_result_cannot_complete_reused_action():
     worker, results = start(state)
     pending = client.sent.get(timeout=1)
     try:
-        first_result.set_result(SimpleNamespace(result=Fibonacci.Result(),
-                                                status=GoalStatus.STATUS_SUCCEEDED))
+        first_result.set_result(
+            SimpleNamespace(result=Fibonacci.Result(), status=GoalStatus.STATUS_SUCCEEDED)
+        )
         assert results.empty()
         handle, result = goal_handle()
         pending.set_result(handle)
-        result.set_result(SimpleNamespace(result=Fibonacci.Result(),
-                                          status=GoalStatus.STATUS_ABORTED))
+        result.set_result(
+            SimpleNamespace(result=Fibonacci.Result(), status=GoalStatus.STATUS_ABORTED)
+        )
         worker.join(timeout=1)
         assert results.get(timeout=1) == ABORT
     finally:
@@ -144,13 +153,19 @@ def test_old_response_cannot_complete_reused_service():
         return future
 
     client.call_async.side_effect = call_async
-    with patch.object(ROSClientsCache, "get_or_create_service_client", return_value=client):
+    with patch.object(
+        ROSClientsCache, "get_or_create_service_client", return_value=client
+    ):
         state = ServiceState(
-            AddTwoInts, "service", lambda _: AddTwoInts.Request(),
+            AddTwoInts,
+            "service",
+            lambda _: AddTwoInts.Request(),
             outcomes={"old", "new"},
             response_handler=lambda _, response: "old" if response.sum == 1 else "new",
             node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)),
-            response_timeout=0.2, maximum_retry=0)
+            response_timeout=0.2,
+            maximum_retry=0,
+        )
 
     assert state() == TIMEOUT
     old_request = sent.get(timeout=1)
@@ -179,10 +194,18 @@ def test_action_and_service_discovery_observe_cancellation():
     client.wait_for_server = unavailable
     action = action_state(client)
     service_client = Mock()
-    service_client.wait_for_service.side_effect = lambda timeout_sec: unavailable(timeout_sec)
-    with patch.object(ROSClientsCache, "get_or_create_service_client", return_value=service_client):
-        service = ServiceState(AddTwoInts, "service", lambda _: AddTwoInts.Request(),
-                               node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)))
+    service_client.wait_for_service.side_effect = lambda timeout_sec: unavailable(
+        timeout_sec
+    )
+    with patch.object(
+        ROSClientsCache, "get_or_create_service_client", return_value=service_client
+    ):
+        service = ServiceState(
+            AddTwoInts,
+            "service",
+            lambda _: AddTwoInts.Request(),
+            node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)),
+        )
     for state in (action, service):
         worker, results = start(state)
         sleep(0.02)
@@ -206,7 +229,10 @@ def test_cache_separates_node_instances_with_identical_names():
     ROSClientsCache.clear_all()
     first, second = NodeStub(), NodeStub()
     try:
-        with patch("yasmin_ros.ros_clients_cache.ActionClient", side_effect=lambda *a, **kw: object()):
+        with patch(
+            "yasmin_ros.ros_clients_cache.ActionClient",
+            side_effect=lambda *a, **kw: object(),
+        ):
             for factory, message_type in (
                 (ROSClientsCache.get_or_create_action_client, Fibonacci),
                 (ROSClientsCache.get_or_create_service_client, AddTwoInts),
