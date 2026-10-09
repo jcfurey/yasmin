@@ -14,12 +14,14 @@
 
 #include "yasmin_viewer/yasmin_viewer_node.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #if __has_include("rclcpp/version.h")
 #include "rclcpp/version.h"
@@ -263,7 +265,8 @@ YasminViewerNode::YasminViewerNode(const rclcpp::NodeOptions &options)
   // to show the state machines of that namespace.
   this->fsm_sub_ = this->create_subscription<StateMachineMsg>(
       "fsm_viewer", 10,
-      std::bind(&YasminViewerNode::fsm_viewer_cb, this, std::placeholders::_1));
+      std::bind(&YasminViewerNode::fsm_viewer_cb, this, std::placeholders::_1,
+                std::placeholders::_2));
 
   this->start_server();
 
@@ -281,13 +284,32 @@ std::string YasminViewerNode::get_fsms_json() {
   std::ostringstream stream;
   stream << "{";
 
+  std::vector<const CachedFsm *> entries;
+  entries.reserve(this->fsms_.size());
+  for (const auto &[publisher, cached_fsm] : this->fsms_) {
+    (void)publisher;
+    entries.push_back(&cached_fsm);
+  }
+  std::sort(entries.begin(), entries.end(),
+            [](const CachedFsm *a, const CachedFsm *b) {
+              return a->sequence < b->sequence;
+            });
+
+  // Machines from different publishers can share a name: number the later
+  // ones instead of letting them replace each other.
+  std::unordered_map<std::string, int> name_counts;
   bool first_entry = true;
-  for (const auto &[name, cached_fsm] : this->fsms_) {
+  for (const auto *cached_fsm : entries) {
     if (!first_entry) {
       stream << ",";
     }
     first_entry = false;
-    stream << '"' << escape_json(name) << '"' << ":" << cached_fsm.json;
+    const int count = ++name_counts[cached_fsm->name];
+    const std::string display_name =
+        count == 1 ? cached_fsm->name
+                   : cached_fsm->name + " (" + std::to_string(count) + ")";
+    stream << '"' << escape_json(display_name) << '"' << ":"
+           << cached_fsm->json;
   }
 
   stream << "}";
@@ -298,7 +320,8 @@ const std::string &YasminViewerNode::get_web_root() const {
   return this->web_root_;
 }
 
-void YasminViewerNode::fsm_viewer_cb(const StateMachineMsg::SharedPtr msg) {
+void YasminViewerNode::fsm_viewer_cb(const StateMachineMsg::SharedPtr msg,
+                                     const rclcpp::MessageInfo &info) {
   if (!msg || msg->states.empty()) {
     return;
   }
@@ -312,10 +335,19 @@ void YasminViewerNode::fsm_viewer_cb(const StateMachineMsg::SharedPtr msg) {
     }
   }
   const std::string json = state_machine_to_json(*msg);
+  const auto &gid = info.get_rmw_message_info().publisher_gid;
+  const std::string publisher(reinterpret_cast<const char *>(gid.data),
+                              sizeof(gid.data));
 
   std::lock_guard<std::mutex> lock(this->fsms_mutex_);
   this->prune_expired_locked(now);
-  this->fsms_[fsm_name] = CachedFsm{json, now};
+  auto [entry, inserted] = this->fsms_.try_emplace(publisher);
+  if (inserted) {
+    entry->second.sequence = this->next_sequence_++;
+  }
+  entry->second.name = fsm_name;
+  entry->second.json = json;
+  entry->second.timestamp = now;
 }
 
 void YasminViewerNode::start_server() {

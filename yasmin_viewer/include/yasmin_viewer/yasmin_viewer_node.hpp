@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <list>
 #include <memory>
@@ -88,10 +89,14 @@ private:
    * @brief Stores a serialized finite state machine and its last update time.
    */
   struct CachedFsm {
+    /// @brief Name of the root state machine
+    std::string name;
     /// @brief Cached JSON representation of the FSM
     std::string json;
     /// @brief Timestamp when this cache entry was created
     std::chrono::steady_clock::time_point timestamp;
+    /// @brief Order in which the publisher was first seen
+    std::uint64_t sequence{0};
   };
 
   /// @brief Alias for the StateMachine ROS2 message type
@@ -104,8 +109,10 @@ private:
   /**
    * @brief Callback for incoming state machine messages.
    * @param msg Received state machine message.
+   * @param info Message metadata identifying the publisher.
    */
-  void fsm_viewer_cb(const StateMachineMsg::SharedPtr msg);
+  void fsm_viewer_cb(const StateMachineMsg::SharedPtr msg,
+                     const rclcpp::MessageInfo &info);
 
   /**
    * @brief Starts the embedded web server thread.
@@ -159,8 +166,11 @@ private:
 
   /// @brief Mutex protecting access to the finite state machine cache.
   mutable std::mutex fsms_mutex_;
-  /// @brief Cache of serialized finite state machines indexed by name.
+  /// @brief Cache of serialized finite state machines indexed by publisher
+  /// GID, so machines with the same name are kept apart.
   std::unordered_map<std::string, CachedFsm> fsms_;
+  /// @brief Next first-seen order for a new publisher.
+  std::uint64_t next_sequence_{0};
 
   /// @brief Subscription for incoming state machine descriptions.
   rclcpp::Subscription<StateMachineMsg>::SharedPtr fsm_sub_;

@@ -92,6 +92,15 @@ install(DIRECTORY web/
   DESTINATION share/${PROJECT_NAME}/web
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_yasmin_viewer_node test/test_yasmin_viewer_node.cpp
+    TIMEOUT 120)
+  if(TARGET test_yasmin_viewer_node)
+    target_link_libraries(test_yasmin_viewer_node yasmin_viewer_node_component)
+  endif()
+endif()
+
 ament_export_include_directories("include/${PROJECT_NAME}")
 ament_export_libraries(${PROJECT_NAME})
 ament_export_targets(${PROJECT_NAME})
