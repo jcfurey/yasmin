@@ -219,6 +219,27 @@ def test_goal_response_timeout_does_not_limit_accepted_goal():
         worker.join(timeout=1)
 
 
+def test_goal_is_built_after_server_is_available():
+    built = []
+    client = ActionClientStub()
+    client.wait_for_server = lambda timeout: (sleep(timeout), False)[1]
+    with patch.object(
+        ROSClientsCache, "get_or_create_action_client", return_value=client
+    ):
+        state = ActionState(
+            Fibonacci,
+            "action",
+            lambda _: built.append(True) or Fibonacci.Goal(),
+            node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)),
+        )
+    worker, results = start(state)
+    sleep(0.05)
+    state.cancel_state()
+    worker.join(timeout=1)
+    assert results.get(timeout=1) == CANCEL
+    assert built == []
+
+
 def test_action_and_service_discovery_observe_cancellation():
     def unavailable(timeout):
         sleep(timeout)

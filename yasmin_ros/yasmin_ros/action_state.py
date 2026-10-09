@@ -196,8 +196,6 @@ class ActionState(State):
             str: A string representing the outcome of the action execution.
                 Possible outcomes include SUCCEED, ABORT, CANCEL, or TIMEOUT.
         """
-        goal = self._create_goal_handler(blackboard)
-
         yasmin.YASMIN_LOG_INFO(f"Waiting for action '{self._action_name}'")
 
         outcome = wait_for_server_with_retry(
@@ -209,6 +207,13 @@ class ActionState(State):
         )
         if outcome is not None:
             return outcome
+
+        if self.is_canceled():
+            return CANCEL
+
+        # Built once the server is available, as in C++, so a long wait does
+        # not send a goal from stale blackboard data.
+        goal = self._create_goal_handler(blackboard)
 
         with self._goal_handle_lock:
             if self.is_canceled():

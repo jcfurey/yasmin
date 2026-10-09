@@ -212,6 +212,15 @@ The Docker builds mirror `rosdep install` plus `colcon build/test`. They cover `
 
 Kilted and Rolling have not been built.
 
+## Implementation progress — Nav2 goal acceptance (2026-10-09)
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| N10 | Fixed | **P2, integration gap.** `response_timeout` bounds goal acceptance and result together, so the only way to bound a server that never accepts a goal also capped how long navigation could run. Nav2's behavior tree action nodes bound only acceptance (`server_timeout`). `set_goal_response_timeout()` (C++) and `goal_response_timeout` (Python) add that separate bound: on expiry the state returns `timeout` and requests cancellation, so a goal accepted later is canceled. Tested against a real server that accepts after 1.5 s (`timeout` after 0.3 s, then the late goal receives a cancel request). Also tested with a 5 s goal that still succeeds under a 0.3 s bound, and with mocked late responses in Python. |
+| N11 | Fixed | **P3, source-confirmed.** The Python `ActionState` built its goal before waiting for the server, while C++ builds it afterwards, so a long wait could send a goal built from stale blackboard data. It now builds the goal once the server is available. A regression checks that no goal is built while the server is unavailable. |
+
+Verification: `yasmin_ros` 141 records and `yasmin_factory` 56 records passed on Lyrical (one skip by design). `yasmin_ros` also passed rebuilt in the Jazzy and Humble images. Both formatters pass repository-wide.
+
 ## Findings inventory
 
 | ID | Priority | Area | Finding | Evidence |
@@ -249,6 +258,8 @@ Kilted and Rolling have not been built.
 | N07 | P3 | Monitors | `msg_queue < 1` silently discards every message | Source-confirmed (follow-up review) |
 | N08 | P1 | PCL ExtractIndices | Organized output writes past narrow fields and the buffer end | Reproduced with Valgrind (follow-up review) |
 | N09 | P2 | State parameters | C++ plugins reject numeric parameters from XML and Python | Reproduced (follow-up review) |
+| N10 | P2 | Action goal acceptance | No bound on goal acceptance without also capping goal duration | Integration gap (follow-up review) |
+| N11 | P3 | Python action | Goal built before waiting for the server | Source-confirmed (follow-up review) |
 
 ### L01 — Unchecked C++ blackboard casts
 

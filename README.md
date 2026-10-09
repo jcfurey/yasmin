@@ -4511,6 +4511,8 @@ int main(int argc, char *argv[]) {
 
 **Nav2 results.** Nav2 actions report why a goal failed in the result of an aborted goal (`error_code`, `error_msg` on Jazzy and later). Pass `abort_handler` (Python) or call `set_abort_handler()` (C++) to map that result to an outcome, e.g. to branch on `ComputePathToPose.Result.NO_VALID_PATH`. Without a handler, an aborted goal returns `aborted`. A rejected goal always returns `aborted`. Timeouts and state cancellation request cancellation of the remote goal.
 
+**Goal acceptance.** `response_timeout` bounds acceptance and result together, which would also cap how long a navigation may run. To bound only the wait for the server to accept or reject a goal, like the server timeout of Nav2's behavior tree action nodes, pass `goal_response_timeout` (Python, seconds) or call `set_goal_response_timeout()` (C++, e.g. `std::chrono::milliseconds(500)`) before adding the state to a state machine. On expiry the state returns `timeout`, and a goal accepted later is canceled.
+
 **Ctrl-C.** With `handle_sigint=True`, the first SIGINT cancels the running state machine while the ROS context stays valid, so active goals can still be canceled on their servers. The cancellation runs on a dispatcher thread, not in the signal handler. A second SIGINT before the state machine finishes is forwarded to the previously installed handler (rclcpp/rclpy shutdown, or the default action).
 
 ## YASMIN Editor
