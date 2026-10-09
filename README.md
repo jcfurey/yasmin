@@ -4399,7 +4399,8 @@ blackboard under the keys `tf_buffer` and `tf_listener`. Subsequent states retri
 from the blackboard to perform transform lookups without duplicating listener infrastructure.
 
 The buffer uses the node's ROS clock, so it follows `use_sim_time` and clears itself when simulated
-time jumps backwards. The pair is reused across executions, so the transform history is kept, and
+time jumps backwards (in Python, this needs a tf2_ros newer than Humble, whose Python buffer has no
+clock). The pair is reused across executions, so the transform history is kept, and
 recreated when `cache_time_sec` changes. Both constructors accept an optional node. In C++, the
 buffer has a timer interface, so `waitForTransform()` works.
 

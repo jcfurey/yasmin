@@ -91,7 +91,10 @@ class TestTfBufferStateClock(unittest.TestCase):
 
         self.assertEqual(SUCCEED, state(blackboard))
 
-        self.assertIs(blackboard["tf_buffer"].clock, self.node.get_clock())
+        buffer = blackboard["tf_buffer"]
+        if not hasattr(buffer, "clock"):
+            self.skipTest("this tf2_ros Buffer has no clock (Humble)")
+        self.assertIs(buffer.clock, self.node.get_clock())
 
     def test_replacing_buffer_releases_previous_endpoints(self):
         state = TfBufferState(node=self.node)
