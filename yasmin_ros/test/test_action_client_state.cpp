@@ -77,6 +77,8 @@ private:
     auto result = std::make_shared<Fibonacci::Result>();
 
     if (goal->order < 0) {
+      // Stands in for the error code that Nav2 reports when aborting.
+      result->sequence = {goal->order};
       goal_handle->abort(result);
     } else {
       std::this_thread::sleep_for(5s);
@@ -218,6 +220,31 @@ TEST_F(TestActionClientState, TestActionClientStateAbort) {
           });
 
   EXPECT_EQ((*state)(blackboard), std::string(ABORT));
+}
+
+TEST_F(TestActionClientState, TestActionClientStateAbortHandler) {
+  using Fibonacci = example_interfaces::action::Fibonacci;
+  auto blackboard = yasmin::Blackboard::make_shared();
+
+  auto state = std::make_shared<ActionState<Fibonacci>>(
+      "test",
+      [](yasmin::Blackboard::SharedPtr) {
+        auto goal = Fibonacci::Goal();
+        goal.order = -7;
+        return goal;
+      },
+      yasmin::Outcomes{"no_valid_path"},
+      [](yasmin::Blackboard::SharedPtr, std::shared_ptr<Fibonacci::Result>) {
+        return std::string(SUCCEED);
+      });
+  state->set_abort_handler([](yasmin::Blackboard::SharedPtr blackboard,
+                              std::shared_ptr<Fibonacci::Result> result) {
+    blackboard->set<int32_t>("error_code", result->sequence.at(0));
+    return std::string("no_valid_path");
+  });
+
+  EXPECT_EQ((*state)(blackboard), "no_valid_path");
+  EXPECT_EQ(blackboard->get<int32_t>("error_code"), -7);
 }
 
 TEST_F(TestActionClientState, TestActionClientStateRetryWaitTimeout) {

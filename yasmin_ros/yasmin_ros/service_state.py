@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from threading import Event
+from dataclasses import dataclass, field
+from threading import Event, Lock
 from typing import Set, Callable, Type, Any
 
 from rclpy.node import Node
@@ -29,8 +30,13 @@ from yasmin_ros.ros_state_utils import (
     wait_with_retry,
     wait_for_server_with_retry,
     setup_outcomes,
-    cancel_with_event,
 )
+
+
+@dataclass
+class _ServiceCall:
+    done: Event = field(default_factory=Event)
+    response: Any = None
 
 
 class ServiceState(State):
@@ -115,8 +121,9 @@ class ServiceState(State):
         ## Maximum number of retries.
         self._maximum_retry: int = maximum_retry
 
-        ## Event to signal when the service response is received.
-        self._response_received_event: Event = Event()
+        ## Current invocation; each one owns its event and response.
+        self._call: _ServiceCall = None
+        self._call_lock: Lock = Lock()
 
         super().__init__(outcomes)
 
@@ -136,7 +143,6 @@ class ServiceState(State):
             str: The outcome of the service call, which can be SUCCEED, ABORT, or TIMEOUT.
         """
         request = self._create_request_handler(blackboard)
-        retry_count = 0
 
         yasmin.YASMIN_LOG_INFO(f"Waiting for service '{self._srv_name}'")
 
@@ -150,21 +156,24 @@ class ServiceState(State):
         if outcome is not None:
             return outcome
 
-        if self.is_canceled():
-            return CANCEL
+        # Checked under the lock so a concurrent cancel either stops the
+        # request here or wakes this invocation's wait.
+        with self._call_lock:
+            if self.is_canceled():
+                return CANCEL
+            call = _ServiceCall()
+            self._call = call
 
         try:
             yasmin.YASMIN_LOG_INFO(f"Sending request to service '{self._srv_name}'")
 
-            self._response = None
-            self._response_received_event.clear()
-
             future = self._service_client.call_async(request)
-            future.add_done_callback(self.response_callback)
+            future.add_done_callback(
+                lambda done_future: self._response_callback(done_future, call)
+            )
 
-            retry_count = 0
             outcome = wait_with_retry(
-                lambda: self._response_received_event.wait(self._response_timeout),
+                lambda: call.done.wait(self._response_timeout),
                 self._maximum_retry,
                 f"Timeout reached while waiting for response from "
                 f"service '{self._srv_name}'",
@@ -182,32 +191,35 @@ class ServiceState(State):
             yasmin.YASMIN_LOG_WARN(f"Service call failed: {e}")
             return ABORT
 
-        if self._response is None:
+        if call.response is None:
             return ABORT
 
         if self._response_handler:
-            outcome = self._response_handler(blackboard, self._response)
+            outcome = self._response_handler(blackboard, call.response)
             return outcome
 
         return SUCCEED
 
     def cancel_state(self) -> None:
-        super().cancel_state()
-        cancel_with_event(self._response_received_event)
+        with self._call_lock:
+            super().cancel_state()
+            call = self._call
+        if call is not None:
+            call.done.set()
 
-    def response_callback(self, future: Future) -> None:
+    def _response_callback(self, future: Future, call: _ServiceCall) -> None:
         """
-        Callback function to process the service response.
+        Store the service response for the invocation that sent the request.
 
-        This method is called when the service response is received. It stores
-        the response and signals the waiting thread by setting the event.
+        Late responses to an earlier invocation cannot complete a later one.
 
         Args:
             future (Future): The future object containing the service response.
+            call (_ServiceCall): The invocation that sent the request.
         """
         try:
-            self._response = future.result()
+            call.response = future.result()
         except Exception as e:
             yasmin.YASMIN_LOG_WARN(f"Service call failed: {e}")
-            self._response = None
-        self._response_received_event.set()
+            call.response = None
+        call.done.set()

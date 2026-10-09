@@ -17,7 +17,7 @@ import time
 import unittest
 from threading import Thread
 
-from yasmin import set_py_loggers
+from yasmin import Blackboard, set_py_loggers
 from yasmin_ros import ActionState
 from yasmin_ros.ros_clients_cache import ROSClientsCache
 from yasmin_ros.basic_outcomes import SUCCEED, CANCEL, ABORT, TIMEOUT
@@ -59,6 +59,8 @@ class AuxNode(Node):
         request = goal_handle.request
 
         if request.order < 0:
+            # Stands in for the error code that Nav2 reports when aborting.
+            result.sequence = [request.order]
             goal_handle.abort()
 
         else:
@@ -125,6 +127,28 @@ class TestActionClient(unittest.TestCase):
 
         state3 = ActionState(Fibonacci, "test2", create_goal_cb)
         self.assertEqual(2, ROSClientsCache.get_action_clients_count())
+
+    def test_action_client_abort_handler_receives_result(self):
+
+        def create_goal_cb(blackboard):
+            goal = Fibonacci.Goal()
+            goal.order = -7
+            return goal
+
+        def abort_handler(blackboard, result):
+            blackboard["error_code"] = result.sequence[0]
+            return "no_valid_path"
+
+        state = ActionState(
+            Fibonacci,
+            "test",
+            create_goal_cb,
+            outcomes={"no_valid_path"},
+            abort_handler=abort_handler,
+        )
+        blackboard = Blackboard()
+        self.assertEqual("no_valid_path", state(blackboard))
+        self.assertEqual(-7, blackboard["error_code"])
 
     def test_action_client_result_handler(self):
 

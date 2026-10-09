@@ -63,6 +63,7 @@ class ActionState(State):
         wait_timeout: float = None,
         response_timeout: float = None,
         maximum_retry: int = 3,
+        abort_handler: Callable = None,
     ) -> None:
         """
         Construct an ActionState with a specific action name and goal handler.
@@ -82,6 +83,10 @@ class ActionState(State):
             wait_timeout (float, optional): The maximum time to wait for the action server. Default is None (wait indefinitely).
             response_timeout (float, optional): The maximum time to wait for the action response. Default is None (wait indefinitely).
             maximum_retry (int, optional): Maximum retries of the action if it returns timeout. Default is 3.
+            abort_handler (Callable[[Blackboard, Any], str], optional): A function mapping the result
+                of a goal aborted by the server to an outcome. Servers such as Nav2 report the failure
+                reason in this result (e.g. ``error_code``). Without it, or for a rejected goal, the
+                state returns ABORT.
 
         Raises:
             ValueError: If create_goal_handler is None.
@@ -96,6 +101,8 @@ class ActionState(State):
         self._result_handler: Callable[[Blackboard, Any], str] = result_handler
         ## Handler function for processing feedback.
         self._feedback_handler: Callable[[Blackboard, Any], None] = feedback_handler
+        ## Handler function for processing aborted results.
+        self._abort_handler: Callable[[Blackboard, Any], str] = abort_handler
 
         ## Maximum time to wait for the action server.
         self._wait_timeout: float = wait_timeout
@@ -227,6 +234,8 @@ class ActionState(State):
             return CANCEL
 
         elif status == GoalStatus.STATUS_ABORTED:
+            if self._abort_handler is not None and execution.result is not None:
+                return self._abort_handler(blackboard, execution.result)
             return ABORT
 
         elif status == GoalStatus.STATUS_SUCCEEDED:

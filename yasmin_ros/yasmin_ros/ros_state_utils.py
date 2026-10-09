@@ -30,11 +30,11 @@ def resolve_node(node: Optional[Node] = None) -> Node:
 
 
 def setup_outcomes(
-    outcomes: Set[str],
+    outcomes: Optional[Set[str]],
     base_outcomes: Set[str],
     add_timeout: bool = False,
 ) -> Set[str]:
-    outcomes = set(outcomes)
+    outcomes = set(outcomes or ())
     outcomes.update(base_outcomes)
     if add_timeout:
         outcomes.add(TIMEOUT)

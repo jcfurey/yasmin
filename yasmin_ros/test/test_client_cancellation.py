@@ -133,6 +133,43 @@ def test_old_goal_response_is_canceled_after_reuse():
     handle.cancel_goal_async.assert_called_once()
 
 
+def test_old_response_cannot_complete_reused_service():
+    sent = Queue()
+    client = Mock()
+    client.wait_for_service.return_value = True
+
+    def call_async(request):
+        future = Future()
+        sent.put(future)
+        return future
+
+    client.call_async.side_effect = call_async
+    with patch.object(ROSClientsCache, "get_or_create_service_client", return_value=client):
+        state = ServiceState(
+            AddTwoInts, "service", lambda _: AddTwoInts.Request(),
+            outcomes={"old", "new"},
+            response_handler=lambda _, response: "old" if response.sum == 1 else "new",
+            node=SimpleNamespace(context=SimpleNamespace(ok=lambda: True)),
+            response_timeout=0.2, maximum_retry=0)
+
+    assert state() == TIMEOUT
+    old_request = sent.get(timeout=1)
+    client.remove_pending_request.assert_called_once_with(old_request)
+
+    worker, results = start(state)
+    pending = sent.get(timeout=1)
+    try:
+        old_request.set_result(AddTwoInts.Response(sum=1))
+        sleep(0.05)
+        assert results.empty()
+        pending.set_result(AddTwoInts.Response(sum=2))
+        worker.join(timeout=1)
+        assert results.get(timeout=1) == "new"
+    finally:
+        state.cancel_state()
+        worker.join(timeout=1)
+
+
 def test_action_and_service_discovery_observe_cancellation():
     def unavailable(timeout):
         sleep(timeout)

@@ -302,6 +302,21 @@ public:
   }
 
   /**
+   * @brief Set a handler for results of goals that the server aborted.
+   *
+   * Action servers such as Nav2 report why a goal failed in the result of an
+   * aborted goal (e.g. `error_code` and `error_msg`). The handler receives
+   * that result and returns the outcome, which must be one of the state's
+   * outcomes. Without a handler, an aborted goal returns ABORT. A goal
+   * rejected by the server has no result and always returns ABORT.
+   *
+   * @param abort_handler Handler mapping an aborted result to an outcome.
+   */
+  void set_abort_handler(ResultHandler abort_handler) {
+    this->abort_handler = std::move(abort_handler);
+  }
+
+  /**
    * @brief Notify that the action cancellation has completed.
    *
    * This function is called to notify that the action cancellation process
@@ -511,6 +526,9 @@ public:
       return basic_outcomes::CANCEL;
 
     case rclcpp_action::ResultCode::ABORTED:
+      if (this->abort_handler && result) {
+        return this->abort_handler(blackboard, result);
+      }
       return basic_outcomes::ABORT;
 
     case rclcpp_action::ResultCode::SUCCEEDED:
@@ -599,6 +617,8 @@ private:
   ResultHandler result_handler;
   /// @brief Handler function for processing feedback.
   FeedbackHandler feedback_handler;
+  /// @brief Handler function for processing aborted results.
+  ResultHandler abort_handler;
 
   /// @brief Maximum time to wait for the action server.
   int wait_timeout;
