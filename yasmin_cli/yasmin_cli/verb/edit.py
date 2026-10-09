@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
-import subprocess
+import sys
 from pathlib import Path
 
 from yasmin_cli.completer import is_state_machine_xml, xml_file_completer
+from yasmin_cli.verb.run import run_package_executable
 
 
 def run_editor(state_machine_file: str = "") -> int:
@@ -25,31 +26,18 @@ def run_editor(state_machine_file: str = "") -> int:
         xml_path = Path(state_machine_file)
 
         if not xml_path.is_file():
-            print(f"File does not exist: {state_machine_file}")
+            print(f"File does not exist: {state_machine_file}", file=sys.stderr)
             return 1
 
         if not is_state_machine_xml(xml_path):
-            print(f"Not a valid YASMIN state machine XML file: {state_machine_file}")
+            print(
+                f"Not a valid YASMIN state machine XML file: {state_machine_file}",
+                file=sys.stderr,
+            )
             return 1
 
-    command = [
-        "ros2",
-        "run",
-        "yasmin_editor",
-        "yasmin_editor",
-    ]
-
-    if state_machine_file:
-        command.extend(["--xml-file", state_machine_file])
-
-    try:
-        completed = subprocess.run(command, check=False)
-        return completed.returncode
-    except KeyboardInterrupt:
-        return 130
-    except FileNotFoundError as exc:
-        print(f"Failed to execute command: {exc}")
-        return 1
+    arguments = ["--xml-file", state_machine_file] if state_machine_file else []
+    return run_package_executable("yasmin_editor", "yasmin_editor", arguments)
 
 
 def add_edit_verb(subparsers):

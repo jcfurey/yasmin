@@ -37,9 +37,12 @@ def plugin_id(plugin) -> str:
     if plugin.plugin_type == "cpp":
         return plugin.class_name or ""
     if plugin.plugin_type == "xml":
+        # The path inside the package's share directory keeps XMLs with the
+        # same file name in different folders apart.
+        path = getattr(plugin, "relative_path", None) or plugin.file_name or ""
         if plugin.package_name:
-            return f"{plugin.package_name}/{plugin.file_name}"
-        return plugin.file_name or ""
+            return f"{plugin.package_name}/{path}"
+        return path
     return ""
 
 
@@ -68,19 +71,13 @@ def find_plugin(plugin_name: str, include_xml: bool = True):
 
 
 def build_plugin_info(plugin_name: str):
+    """Load a plugin by id; raises with the loading error if it fails."""
     if "." in plugin_name:
         last_dot = plugin_name.rfind(".")
         module = plugin_name[:last_dot]
         class_name = plugin_name[last_dot + 1 :]
-        try:
-            return PluginInfo(plugin_type="python", class_name=class_name, module=module)
-        except Exception:
-            return None
-    else:
-        try:
-            return PluginInfo(plugin_type="cpp", class_name=plugin_name)
-        except Exception:
-            return None
+        return PluginInfo(plugin_type="python", class_name=class_name, module=module)
+    return PluginInfo(plugin_type="cpp", class_name=plugin_name)
 
 
 def filter_plugins(plugins, plugin_type: str = "all", search: Union[str, None] = None):
@@ -225,13 +222,13 @@ def get_state_machine_input_keys(state_machine_file: str) -> List[Dict[str, str]
         if strip_namespace(child.tag) != "Key":
             continue
 
-        key_type = (child.attrib.get("type") or "").strip().lower()
+        # As `run --input`: untyped keys are inputs, and required inputs
+        # (without a default) can be given as well.
+        key_type = (child.attrib.get("type") or "in").strip().lower()
         if key_type not in INPUT_KEY_TYPES:
             continue
 
-        default_type = (child.attrib.get("default_type") or "").strip()
-        if not default_type:
-            continue
+        default_type = (child.attrib.get("default_type") or "str").strip()
 
         keys.append(
             {
@@ -324,6 +321,9 @@ def _xml_file_candidates(start_dir: Path, max_depth: int = 3) -> List[Path]:
 
 
 def xml_file_completer(prefix, parsed_args, **kwargs):
+    if "/" in prefix:
+        return _xml_path_matches(prefix)
+
     current_dir = Path.cwd()
     matches: List[str] = []
 
@@ -340,4 +340,31 @@ def xml_file_completer(prefix, parsed_args, **kwargs):
 
         matches.append(relative_path)
 
+    return matches
+
+
+def _xml_path_matches(prefix: str) -> List[str]:
+    """Directories and state machine XMLs in the directory the prefix names."""
+    head, _, name_prefix = prefix.rpartition("/")
+    directory = Path(head or "/").expanduser()
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return []
+
+    matches: List[str] = []
+    for entry in entries:
+        if not entry.name.startswith(name_prefix):
+            continue
+        if entry.name.startswith(".") and not name_prefix.startswith("."):
+            continue
+        candidate = f"{head}/{entry.name}"
+        if entry.is_dir():
+            matches.append(candidate + "/")
+        elif (
+            entry.suffix == ".xml"
+            and entry.name not in IGNORE_XML_FILES
+            and is_state_machine_xml(entry)
+        ):
+            matches.append(candidate)
     return matches

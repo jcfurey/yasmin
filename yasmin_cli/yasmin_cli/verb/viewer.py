@@ -14,33 +14,19 @@
 
 from __future__ import annotations
 
-import subprocess
+
+from yasmin_cli.verb.run import run_package_executable
 
 
 def run_viewer(
     host: str = "127.0.0.1",
     port: int = 5000,
 ) -> int:
-    command = [
-        "ros2",
-        "run",
+    return run_package_executable(
         "yasmin_viewer",
         "yasmin_viewer_node",
-        "--ros-args",
-        "-p",
-        f"host:={host}",
-        "-p",
-        f"port:={port}",
-    ]
-
-    try:
-        completed = subprocess.run(command, check=False)
-        return completed.returncode
-    except KeyboardInterrupt:
-        return 130
-    except FileNotFoundError as exc:
-        print(f"Failed to execute command: {exc}")
-        return 1
+        ["--ros-args", "-p", f"host:={host}", "-p", f"port:={port}"],
+    )
 
 
 def add_viewer_verb(subparsers):

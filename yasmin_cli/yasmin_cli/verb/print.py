@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from typing import List
@@ -22,9 +23,10 @@ from yasmin_editor.io import model_from_xml
 from yasmin_editor.model import validate_model
 
 from yasmin_cli.completer import strip_namespace, xml_file_completer
+from yasmin_cli.verb.validate import _validate_single_file
 
-CONTAINER_TAGS = {"StateMachine", "Concurrence"}
-STATE_TAGS = {"State", "StateMachine", "Concurrence"}
+CONTAINER_TAGS = {"StateMachine", "Concurrence", "OrthogonalState", "Region"}
+STATE_TAGS = {"State", "StateMachine", "Concurrence", "OrthogonalState", "JoinState"}
 
 
 def add_print_verb(subparsers):
@@ -43,7 +45,7 @@ def add_print_verb(subparsers):
     parser.add_argument(
         "--validate-only",
         action="store_true",
-        help="Only print the validation result",
+        help="Only validate with the factory, as 'ros2 yasmin validate' does",
     )
 
     parser.set_defaults(main=_main_print)
@@ -82,7 +84,20 @@ def _collect_final_outcomes(element: ET.Element) -> List[ET.Element]:
 
 
 def _collect_state_children(element: ET.Element) -> List[ET.Element]:
-    return [child for child in element if strip_namespace(child.tag) in STATE_TAGS]
+    # An OrthogonalState's children are its regions.
+    tags = {"Region"} if strip_namespace(element.tag) == "OrthogonalState" else STATE_TAGS
+    return [child for child in element if strip_namespace(child.tag) in tags]
+
+
+def _format_outcome_maps(element: ET.Element) -> List[str]:
+    lines = []
+    for outcome_map in _find_immediate_children(element, "OutcomeMap"):
+        items = [
+            f"{item.attrib.get('state', '')}={item.attrib.get('outcome', '')}"
+            for item in _find_immediate_children(outcome_map, "Item")
+        ]
+        lines.append(f"{outcome_map.attrib.get('outcome', '')}: {', '.join(items)}")
+    return lines
 
 
 def _element_outcomes(element: ET.Element) -> List[str]:
@@ -146,15 +161,15 @@ def _format_container_header(element: ET.Element) -> str:
     keys = [key.attrib.get("name", "") for key in _collect_declared_keys(element)]
     keys = [key for key in keys if key]
 
-    if tag == "StateMachine":
-        header = f"StateMachine(name='{name}'"
+    if tag in ("StateMachine", "Region"):
+        header = f"{tag}(name='{name}'"
         start_state = element.attrib.get("start_state", "")
         if start_state:
             header += f", start_state='{start_state}'"
         header += f", outcomes={_format_name_list(outcomes)}"
     else:
         default_outcome = element.attrib.get("default_outcome", "")
-        header = f"Concurrence(name='{name}'"
+        header = f"{tag}(name='{name}'"
         if default_outcome:
             header += f", default_outcome='{default_outcome}'"
         header += f", outcomes={_format_name_list(outcomes)}"
@@ -181,6 +196,12 @@ def _format_state_header(element: ET.Element) -> str:
 
         class_name = element.attrib.get("class", "")
         return f"{name} (type={state_type or 'unknown'}, class={class_name})"
+
+    if tag == "JoinState":
+        name = element.attrib.get("name", "")
+        sync_id = element.attrib.get("sync_id", "")
+        outcome = element.attrib.get("outcome", "joined")
+        return f"{name} (JoinState, sync_id={sync_id}, outcome={outcome})"
 
     return element.attrib.get("name", tag)
 
@@ -231,7 +252,7 @@ def _render_state_tree(element: ET.Element, indent: int, lines: List[str]) -> No
             lines.append(f"{'  ' * (indent + 1)}states:")
             for child in state_children:
                 child_tag = strip_namespace(child.tag)
-                if child_tag == "State":
+                if child_tag in ("State", "JoinState"):
                     lines.append(f"{'  ' * (indent + 2)}- {_format_state_header(child)}")
                     _render_state_tree(child, indent + 3, lines)
                 else:
@@ -240,6 +261,7 @@ def _render_state_tree(element: ET.Element, indent: int, lines: List[str]) -> No
                     )
                     _render_state_tree(child, indent + 3, lines)
 
+        _append_lines(lines, indent + 1, "outcome map", _format_outcome_maps(element))
         _append_lines(
             lines,
             indent + 1,
@@ -304,8 +326,12 @@ def _render_state_machine(root: ET.Element) -> str:
 def _main_print(args):
     xml_path = Path(args.state_machine_file)
     if not xml_path.is_file():
-        print(f"File does not exist: {args.state_machine_file}")
+        print(f"File does not exist: {args.state_machine_file}", file=sys.stderr)
         return 1
+
+    if args.validate_only:
+        # The same check as `ros2 yasmin validate`: build with the factory.
+        return _validate_single_file(args.state_machine_file, strict_mode=True)
 
     try:
         root = ET.parse(xml_path).getroot()
@@ -313,30 +339,29 @@ def _main_print(args):
         root = None
 
     if root is None or strip_namespace(root.tag) != "StateMachine":
-        print(f"Not a valid YASMIN state machine XML file: {args.state_machine_file}")
+        print(
+            f"Not a valid YASMIN state machine XML file: {args.state_machine_file}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
         model = model_from_xml(xml_path)
     except ET.ParseError as exc:
-        print(f"Failed to parse XML file '{args.state_machine_file}': {exc}")
+        print(
+            f"Failed to parse XML file '{args.state_machine_file}': {exc}",
+            file=sys.stderr,
+        )
         return 1
     except ValueError as exc:
-        print(str(exc))
+        print(str(exc), file=sys.stderr)
         return 1
 
+    # The editor's checks are advice; whether the factory accepts the file is
+    # what `--validate-only` and `ros2 yasmin validate` report.
     validation_result = validate_model(model)
-
     if not validation_result.is_valid:
-        print(validation_result)
-        if not args.validate_only:
-            print()
-
-    if args.validate_only:
-        if validation_result.is_valid:
-            print(validation_result)
-        return 0 if validation_result.is_valid else 1
+        print(f"Editor warnings:\n{validation_result}\n", file=sys.stderr)
 
     print(_render_state_machine(root))
-
-    return 0 if validation_result.is_valid else 1
+    return 0

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 from typing import Dict, List
 from yasmin_cli.completer import find_plugin, plugin_completer, plugin_id
 
@@ -78,7 +79,7 @@ def add_info_verb(subparsers):
 def _main_info(args):
     plugin = find_plugin(args.plugin_id, include_xml=True)
     if plugin is None:
-        print(f"Plugin not found: {args.plugin_id}")
+        print(f"Plugin not found: {args.plugin_id}", file=sys.stderr)
         return 1
 
     _print_plugin_details(plugin)

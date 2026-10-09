@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -452,15 +453,17 @@ def add_test_verb(subparsers):
 
 
 def _main_test(args):
-    plugin = build_plugin_info(args.plugin_id)
-    if plugin is None:
-        print(f"Plugin not found: {args.plugin_id}")
+    try:
+        plugin = build_plugin_info(args.plugin_id)
+    except Exception as exc:
+        print(f"Failed to load plugin '{args.plugin_id}': {exc}", file=sys.stderr)
         return 1
 
     if plugin.plugin_type not in ("cpp", "python"):
         print(
             f"Unsupported plugin type '{plugin.plugin_type}' for test verb. "
-            "Currently only cpp and python states are supported."
+            "Currently only cpp and python states are supported.",
+            file=sys.stderr,
         )
         return 1
 

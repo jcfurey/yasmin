@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import List, Tuple
 
 from ament_index_python import get_package_share_path
-from yasmin_factory import YasminFactory
+from ros2run.api import PackageNotFound, get_executable_path
 from yasmin_plugins_manager import PluginManager
 
 from yasmin_cli.completer import xml_file_completer
+from yasmin_cli.verb.run import ros_parameter_argument
 
 
 def _resolve_plugin_xml_files() -> List[Tuple[str, Path]]:
@@ -60,9 +61,14 @@ def _resolve_plugin_xml_files() -> List[Tuple[str, Path]]:
     return xml_files
 
 
-def _validate_xml_file(xml_file: str, strict_mode: bool) -> Tuple[bool, str]:
+def _validate_xml_file(
+    xml_file: str, strict_mode: bool, use_python: bool = False
+) -> Tuple[bool, str]:
     """
-    Create a state machine from XML using the factory and validate it.
+    Create a state machine from XML with the factory node and validate it.
+
+    Uses the same factory as ``ros2 yasmin run`` (C++ unless ``use_python``),
+    so validation and execution accept the same files.
 
     Parameters
     ----------
@@ -70,26 +76,52 @@ def _validate_xml_file(xml_file: str, strict_mode: bool) -> Tuple[bool, str]:
         Path to the XML state machine file.
     strict_mode : bool
         Whether strict validation should be enabled.
+    use_python : bool
+        Whether to use the Python factory node.
 
     Returns
     -------
     Tuple[bool, str]
         Validation success flag and a message.
     """
+    executable = "yasmin_factory_node.py" if use_python else "yasmin_factory_node"
     try:
-        factory = YasminFactory()
-        state_machine = factory.create_sm_from_file(xml_file)
-        state_machine.validate(strict_mode=strict_mode)
-        del state_machine
-        del factory
+        path = get_executable_path(
+            package_name="yasmin_factory", executable_name=executable
+        )
+    except PackageNotFound:
+        path = None
+    if path is None:
+        return False, f"Executable '{executable}' of yasmin_factory not found"
+
+    command = [
+        path,
+        "--ros-args",
+        "--log-level",
+        "warn",
+        "-p",
+        ros_parameter_argument("state_machine_file", xml_file),
+        "-p",
+        "validate_only:=true",
+        "-p",
+        f"strict_validation:={'true' if strict_mode else 'false'}",
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode == 0:
         return True, "OK"
-    except Exception as exc:
-        return False, str(exc)
+    lines = [line for line in completed.stderr.splitlines() if line.strip()]
+    message = next(
+        (line for line in reversed(lines) if line.startswith("Invalid state machine")),
+        lines[-1] if lines else f"factory node exited with {completed.returncode}",
+    )
+    return False, message
 
 
-def _validate_single_file(state_machine_file: str, strict_mode: bool) -> int:
+def _validate_single_file(
+    state_machine_file: str, strict_mode: bool, use_python: bool = False
+) -> int:
     """
-    Validate one XML state machine file in the current process.
+    Validate one XML state machine file.
 
     Parameters
     ----------
@@ -97,6 +129,8 @@ def _validate_single_file(state_machine_file: str, strict_mode: bool) -> int:
         Path to the XML file.
     strict_mode : bool
         Whether strict validation should be enabled.
+    use_python : bool
+        Whether to use the Python factory node.
 
     Returns
     -------
@@ -110,7 +144,10 @@ def _validate_single_file(state_machine_file: str, strict_mode: bool) -> int:
         print(f"       File does not exist")
         return 1
 
-    success, message = _validate_xml_file(str(xml_path), strict_mode)
+    try:
+        success, message = _validate_xml_file(str(xml_path), strict_mode, use_python)
+    except KeyboardInterrupt:
+        return 130
 
     if success:
         print(f"[OK]   {state_machine_file}")
@@ -121,7 +158,9 @@ def _validate_single_file(state_machine_file: str, strict_mode: bool) -> int:
     return 1
 
 
-def _run_single_validation_subprocess(xml_path: Path, strict_mode: bool) -> int:
+def _run_single_validation_subprocess(
+    xml_path: Path, strict_mode: bool, use_python: bool = False
+) -> int:
     """
     Validate one XML file in a fresh subprocess.
 
@@ -144,6 +183,8 @@ def _run_single_validation_subprocess(xml_path: Path, strict_mode: bool) -> int:
 
     if not strict_mode:
         command.append("--no-strict")
+    if use_python:
+        command.append("--py")
 
     try:
         completed = subprocess.run(command, check=False)
@@ -156,7 +197,7 @@ def _run_single_validation_subprocess(xml_path: Path, strict_mode: bool) -> int:
         return 1
 
 
-def _validate_all_plugin_xml_files(strict_mode: bool) -> int:
+def _validate_all_plugin_xml_files(strict_mode: bool, use_python: bool = False) -> int:
     """
     Validate all XML state machines discovered by the plugin manager.
 
@@ -182,7 +223,7 @@ def _validate_all_plugin_xml_files(strict_mode: bool) -> int:
     failed = 0
 
     for _, xml_path in xml_files:
-        return_code = _run_single_validation_subprocess(xml_path, strict_mode)
+        return_code = _run_single_validation_subprocess(xml_path, strict_mode, use_python)
         if return_code == 130:
             return 130
         if return_code != 0:
@@ -217,6 +258,11 @@ def add_validate_verb(subparsers):
         action="store_true",
         help="Disable strict mode when calling validate()",
     )
+    parser.add_argument(
+        "--py",
+        action="store_true",
+        help="Validate with the Python factory, as 'ros2 yasmin run --py' runs",
+    )
 
     parser.set_defaults(main=_main_validate)
 
@@ -225,6 +271,6 @@ def _main_validate(args):
     strict_mode = not args.no_strict
 
     if args.state_machine_file:
-        return _validate_single_file(args.state_machine_file, strict_mode)
+        return _validate_single_file(args.state_machine_file, strict_mode, args.py)
 
-    return _validate_all_plugin_xml_files(strict_mode)
+    return _validate_all_plugin_xml_files(strict_mode, args.py)
