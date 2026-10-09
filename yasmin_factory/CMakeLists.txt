@@ -67,6 +67,7 @@ pybind11_add_module(yasmin_pybind_bridge
 target_link_libraries(yasmin_pybind_bridge PUBLIC
   pluginlib::pluginlib
   yasmin::yasmin
+  yasmin_ros::yasmin_ros
 )
 install(TARGETS yasmin_pybind_bridge
     LIBRARY DESTINATION lib/${PROJECT_NAME}
@@ -141,6 +142,7 @@ if(BUILD_TESTING)
     test/test_orthogonal_sm.xml
     test/test_action_complete.xml
     test/test_action_cancel.xml
+    test/test_node_names.xml
     DESTINATION share/${PROJECT_NAME}/test
   )
 

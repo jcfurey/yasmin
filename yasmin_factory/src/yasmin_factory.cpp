@@ -475,7 +475,8 @@ void YasminFactory::initialize_python() {
     yasmin::pybind11_utils::register_default_gil_hooks<yasmin::Concurrence>();
 
     // Check if Python is already initialized (e.g., by ROS or another module)
-    if (!Py_IsInitialized()) {
+    const bool embedded = !Py_IsInitialized();
+    if (embedded) {
       py_interpreter_ = std::make_unique<py::scoped_interpreter>();
     }
 
@@ -488,6 +489,18 @@ void YasminFactory::initialize_python() {
 #else
       py::module::import("sys");
 #endif
+      if (embedded) {
+        // This process's main node is the C++ one: Python states get a
+        // companion node with the same --ros-args and a distinct name.
+#if PYBIND11_VERSION_MAJOR > 2 ||                                              \
+    (PYBIND11_VERSION_MAJOR == 2 && PYBIND11_VERSION_MINOR >= 6)
+        py::module_::import("yasmin_ros.yasmin_node")
+#else
+        py::module::import("yasmin_ros.yasmin_node")
+#endif
+            .attr("YasminNode")
+            .attr("configure_as_companion")("_py");
+      }
     } catch (const py::error_already_set &e) {
       throw std::runtime_error("Failed to initialize Python: " +
                                std::string(e.what()));

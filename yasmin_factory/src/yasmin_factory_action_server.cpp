@@ -242,11 +242,12 @@ void YasminFactoryActionServer::execute(
 
 int main(int argc, char *argv[]) {
   rclcpp::init(argc, argv);
-  yasmin_ros::set_ros_loggers();
 
   {
+    // Name the node before anything else creates it with a random name
     auto node =
         yasmin_ros::YasminNode::get_instance("yasmin_factory_action_server");
+    yasmin_ros::set_ros_loggers(node);
     yasmin_factory::YasminFactoryActionServer server(node);
 
     while (rclcpp::ok()) {

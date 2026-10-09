@@ -27,12 +27,14 @@ int main(int argc, char *argv[]) {
   // Initialize ROS 2
   rclcpp::init(argc, argv);
 
+  // Name the node before anything else creates it with a random name
+  auto node = yasmin_ros::YasminNode::get_instance("yasmin_factory_node");
+
   // Set up ROS 2 loggers
-  yasmin_ros::set_ros_loggers();
+  yasmin_ros::set_ros_loggers(node);
   YASMIN_LOG_INFO("yasmin_factory_node");
 
   // Get the state machine file parameter
-  auto node = yasmin_ros::YasminNode::get_instance("yasmin_factory_node");
   node->declare_parameter("state_machine_file", "");
   std::string sm_file = node->get_parameter("state_machine_file")
                             .get_parameter_value()

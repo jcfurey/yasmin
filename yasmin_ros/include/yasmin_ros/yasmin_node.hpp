@@ -97,6 +97,20 @@ public:
                const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
   /**
+   * @brief Make the singleton a companion of another client library's node.
+   *
+   * For processes whose main node belongs to another client library, such as
+   * C++ states in a Python process. When get_instance() later creates the
+   * node, it takes the process `--ros-args` except a node-name remap and, if
+   * one is present, is named after it with `name_suffix` (`fsm` becomes
+   * `fsm_cpp`), so the two nodes do not share a name. Has no effect once the
+   * node exists or when get_instance() is given a name.
+   *
+   * @param name_suffix Suffix appended to the remapped node name.
+   */
+  static void configure_as_companion(const std::string &name_suffix);
+
+  /**
    * @brief Destroy the singleton instance if it exists.
    */
   static void destroy_instance();

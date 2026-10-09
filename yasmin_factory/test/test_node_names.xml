@@ -1,0 +1,10 @@
+<StateMachine outcomes="done">
+  <!-- The C++ state uses the C++ YasminNode, the Python state the rclpy one. -->
+  <State name="TF" type="cpp" class="yasmin_ros/TfBufferState">
+    <Transition from="succeeded" to="PROBE"/>
+    <Transition from="aborted" to="done"/>
+  </State>
+  <State name="PROBE" type="py" module="test.test_simple_state" class="NodeProbeState">
+    <Transition from="done" to="done"/>
+  </State>
+</StateMachine>

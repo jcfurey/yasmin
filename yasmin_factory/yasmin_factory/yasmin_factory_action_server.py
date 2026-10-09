@@ -128,8 +128,9 @@ class FactoryActionServer:
 
 def main():
     rclpy.init()
-    set_ros_loggers()
+    # Name the node before anything else creates it with a random name
     node = YasminNode.get_instance("yasmin_factory_action_server")
+    set_ros_loggers(node)
     server = FactoryActionServer(node)
     try:
         while rclpy.ok():

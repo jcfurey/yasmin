@@ -166,3 +166,68 @@ def test_goal_is_canceled(action_server):
 
     assert result.status == GoalStatus.STATUS_CANCELED
     assert result.result.outcome == ""
+
+
+@pytest.mark.parametrize(
+    "executable, companion",
+    [
+        ("yasmin_factory_node", "probe_fsm_py"),
+        ("yasmin_factory_node.py", "probe_fsm_cpp"),
+    ],
+)
+def test_mixed_language_nodes_share_arguments(executable, companion):
+    # The main node takes the __node remap; the other language's node is a
+    # companion with the same namespace and a suffixed name.
+    domain_id = next(DOMAIN_IDS)
+    environment = os.environ.copy()
+    environment["ROS_DOMAIN_ID"] = str(domain_id)
+    package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [package_dir, environment.get("PYTHONPATH", "")]
+    )
+    process = subprocess.Popen(
+        [
+            os.path.join(
+                get_package_prefix("yasmin_factory"), "lib", "yasmin_factory", executable
+            ),
+            "--ros-args",
+            "-r",
+            "__ns:=/factory_ns",
+            "-r",
+            "__node:=probe_fsm",
+            "-p",
+            "enable_viewer_pub:=false",
+            "-p",
+            f"state_machine_file:={fixture_path('test_node_names.xml')}",
+        ],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    context = Context()
+    rclpy.init(context=context, domain_id=domain_id)
+    node = rclpy.create_node(f"observer_{uuid.uuid4().hex}", context=context)
+    expected = {("probe_fsm", "/factory_ns"), (companion, "/factory_ns")}
+    try:
+        deadline = time.monotonic() + 15.0
+        names = set()
+        while time.monotonic() < deadline:
+            names = set(node.get_node_names_and_namespaces())
+            if expected <= names:
+                break
+            time.sleep(0.2)
+        assert expected <= names, f"graph: {sorted(names)}"
+        others = {
+            entry for entry in names - expected if not entry[0].startswith("observer_")
+        }
+        assert not others, f"unexpected nodes: {sorted(others)}"
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
+        try:
+            os.killpg(process.pid, signal.SIGINT)
+            process.wait(timeout=10.0)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5.0)

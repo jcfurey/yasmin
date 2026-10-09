@@ -19,6 +19,7 @@
 
 #include "yasmin/state.hpp"
 #include "yasmin/types.hpp"
+#include "yasmin_ros/yasmin_node.hpp"
 
 namespace py = pybind11;
 
@@ -90,6 +91,11 @@ private:
 
 PYBIND11_MODULE(yasmin_pybind_bridge, m) {
   m.doc() = "Python bindings for yasmin factory C++ state loading";
+
+  // This module is loaded by Python processes, whose main node is an rclpy
+  // node: C++ states get a companion node with the same --ros-args and a
+  // distinct name.
+  yasmin_ros::YasminNode::configure_as_companion("_cpp");
 
 // Import the State class from yasmin.state module
 // This ensures pybind11 knows how to handle yasmin::State objects

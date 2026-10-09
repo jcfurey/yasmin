@@ -70,3 +70,21 @@ class LifecycleState(State):
     def execute(self, blackboard: Blackboard) -> str:
         blackboard["inner_running"] = self.is_running()
         return "stale_cancel" if self.is_canceled() else "done"
+
+
+class NodeProbeState(State):
+    """Creates the Python YasminNode and keeps it alive briefly."""
+
+    def __init__(self):
+        super().__init__(["done"])
+
+    def execute(self, blackboard: Blackboard) -> str:
+        import time
+
+        from yasmin_ros.yasmin_node import YasminNode
+
+        YasminNode.get_instance()
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and not self.is_canceled():
+            time.sleep(0.1)
+        return "done"

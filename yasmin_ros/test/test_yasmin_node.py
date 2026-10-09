@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import subprocess
+import sys
 import unittest
 
 import rclpy
@@ -20,7 +22,7 @@ from rclpy.parameter import Parameter
 from yasmin import Blackboard
 from yasmin_ros import TfBufferState
 from yasmin_ros.basic_outcomes import SUCCEED
-from yasmin_ros.yasmin_node import YasminNode
+from yasmin_ros.yasmin_node import YasminNode, _companion_options
 
 
 class TestYasminNodeLifecycle(unittest.TestCase):
@@ -69,6 +71,55 @@ class TestYasminNodeLifecycle(unittest.TestCase):
         YasminNode.destroy_instance()
         node.shutdown()
         YasminNode.destroy_instance()
+
+
+class TestCompanionNode(unittest.TestCase):
+    def test_companion_options_drop_node_name_remap(self):
+        name, arguments = _companion_options(
+            [
+                "prog",
+                "--ros-args",
+                "-r",
+                "__ns:=/ns",
+                "--remap",
+                "__node:=fsm",
+                "-p",
+                "use_sim_time:=true",
+                "--",
+                "-r",
+                "__node:=outside",
+                "--ros-args",
+                "-r",
+                "__name:=last",
+            ],
+            "_py",
+        )
+        self.assertEqual("last_py", name)
+        self.assertEqual(
+            ["--ros-args", "-r", "__ns:=/ns", "-p", "use_sim_time:=true"], arguments
+        )
+        self.assertEqual((None, []), _companion_options(["prog"], "_py"))
+
+    def test_companion_takes_process_arguments_with_suffixed_name(self):
+        script = (
+            "from yasmin_ros.yasmin_node import YasminNode\n"
+            "YasminNode.configure_as_companion('_py')\n"
+            "node = YasminNode.get_instance()\n"
+            "print(node.get_name(), node.get_namespace(),"
+            " node.get_parameter('use_sim_time').value)\n"
+            "YasminNode.destroy_instance()\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, "--ros-args", "-r", "__ns:=/cmdline_ns"]
+            + ["-r", "__node:=fsm", "-p", "use_sim_time:=true"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "fsm_py /cmdline_ns True", result.stdout.strip().splitlines()[-1]
+        )
 
 
 class TestTfBufferStateClock(unittest.TestCase):

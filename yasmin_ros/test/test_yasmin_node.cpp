@@ -115,6 +115,41 @@ TEST(TestYasminNodeAutoInit, AutoInitUsesProcessArguments) {
   EXPECT_EQ(std::system(command.c_str()), 0);
 }
 
+// Runs in a child process started with --ros-args by the test below.
+TEST(TestYasminNodeAutoInit, ChildCompanionTakesSuffixedName) {
+  if (std::getenv("YASMIN_NODE_TEST_CHILD") == nullptr) {
+    GTEST_SKIP() << "Runs only as the child of CompanionSkipsNodeNameRemap";
+  }
+  YasminNode::configure_as_companion("_cpp");
+  auto node = YasminNode::get_instance();
+  EXPECT_STREQ(node->get_name(), "fsm_cpp");
+  EXPECT_STREQ(node->get_namespace(), "/cmdline_ns");
+  EXPECT_TRUE(node->get_parameter("use_sim_time").as_bool());
+  node.reset();
+  YasminNode::destroy_instance();
+  rclcpp::shutdown();
+}
+
+TEST(TestYasminNodeAutoInit, CompanionSkipsNodeNameRemap) {
+  const std::string command =
+      "YASMIN_NODE_TEST_CHILD=1 '" + self_path +
+      "' --gtest_filter=TestYasminNodeAutoInit.ChildCompanionTakesSuffixedName "
+      "--ros-args -r __ns:=/cmdline_ns -r __node:=fsm -p use_sim_time:=true";
+  EXPECT_EQ(std::system(command.c_str()), 0);
+}
+
+TEST_F(TestYasminNode, CompanionConfigurationIgnoredOnceNodeExists) {
+  auto node = YasminNode::get_instance("main_node");
+  YasminNode::configure_as_companion("_cpp");
+  EXPECT_EQ(YasminNode::get_instance(), node);
+  node.reset();
+  YasminNode::destroy_instance();
+  // No companion configuration was stored: a new default node is unnamed.
+  EXPECT_EQ(
+      std::string(YasminNode::get_instance()->get_name()).rfind("yasmin_", 0),
+      0U);
+}
+
 TEST_F(TestYasminNode, ShutdownContextGetsNewNode) {
   std::weak_ptr<YasminNode> old_node = YasminNode::get_instance();
   rclcpp::shutdown();

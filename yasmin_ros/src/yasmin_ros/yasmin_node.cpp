@@ -19,6 +19,7 @@
 #include <chrono>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -78,6 +79,55 @@ void init_default_context() {
                 error.what());
     rclcpp::init(0, nullptr);
   }
+}
+
+std::optional<std::string> &companion_suffix() {
+  static std::optional<std::string> suffix;
+  return suffix;
+}
+
+struct CompanionOptions {
+  std::string name;
+  std::vector<std::string> arguments;
+};
+
+// The process --ros-args without node-name remaps, which would give the
+// companion the main node's name; the remapped name gets the suffix instead.
+CompanionOptions companion_options(const std::vector<std::string> &arguments,
+                                   const std::string &suffix) {
+  CompanionOptions options;
+  bool in_ros_args = false;
+  for (std::size_t i = 0; i < arguments.size(); ++i) {
+    const auto &argument = arguments[i];
+    if (argument == "--ros-args") {
+      in_ros_args = true;
+      continue;
+    }
+    if (argument == "--") {
+      in_ros_args = false;
+      continue;
+    }
+    if (!in_ros_args) {
+      continue;
+    }
+    if ((argument == "-r" || argument == "--remap") &&
+        i + 1 < arguments.size()) {
+      const auto &rule = arguments[i + 1];
+      const auto separator = rule.find(":=");
+      const auto key = rule.substr(0, separator);
+      if (separator != std::string::npos &&
+          (key == "__node" || key == "__name")) {
+        options.name = rule.substr(separator + 2) + suffix;
+        ++i;
+        continue;
+      }
+    }
+    options.arguments.push_back(argument);
+  }
+  if (!options.arguments.empty()) {
+    options.arguments.insert(options.arguments.begin(), "--ros-args");
+  }
+  return options;
 }
 
 std::unique_ptr<rclcpp::Executor>
@@ -150,11 +200,27 @@ YasminNode::get_instance(const std::string &node_name,
         "YasminNode options select a context that is not initialized");
   }
 
-  if (instance == nullptr) {
+  if (instance == nullptr && node_name.empty() && companion_suffix() &&
+      context == rclcpp::contexts::get_global_default_context()) {
+    const auto companion =
+        companion_options(read_process_arguments(), *companion_suffix());
+    auto companion_node_options = options;
+    companion_node_options.use_global_arguments(false).arguments(
+        companion.arguments);
+    instance =
+        SharedPtr(new YasminNode(companion.name, companion_node_options));
+  } else if (instance == nullptr) {
     instance = SharedPtr(new YasminNode(node_name, options));
   }
 
   return instance;
+}
+
+void YasminNode::configure_as_companion(const std::string &name_suffix) {
+  std::lock_guard<std::mutex> lock(get_yasmin_node_instance_mutex());
+  if (get_yasmin_node_instance() == nullptr) {
+    companion_suffix() = name_suffix;
+  }
 }
 
 void YasminNode::destroy_instance() {
