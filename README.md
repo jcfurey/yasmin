@@ -52,16 +52,17 @@
 5. [Cross-Language ROS Interface Communication](#crosslanguage-ros-interface-communication)
 6. [CallbackSignal](#callbacksignal)
 7. [TF States](#tf-states)
-8. [YASMIN Editor](#yasmin-editor)
-9. [YASMIN Viewer](#yasmin-viewer)
-   - [Custom Host and Port](#custom-host-and-port)
-10. [YASMIN CLI](#yasmin-cli)
+8. [ROS 2 and Nav2 Integration](#ros-2-and-nav2-integration)
+9. [YASMIN Editor](#yasmin-editor)
+10. [YASMIN Viewer](#yasmin-viewer)
+    - [Custom Host and Port](#custom-host-and-port)
+11. [YASMIN CLI](#yasmin-cli)
     - [Available Commands](#available-commands)
     - [Usage Examples](#usage-examples)
-11. [YASMIN Factory](#yasmin-factory)
-12. [YASMIN PCL](#yasmin-pcl)
-13. [YASMIN Plugins Manager](#yasmin-plugins-manager)
-14. [Citations](#citations)
+12. [YASMIN Factory](#yasmin-factory)
+13. [YASMIN PCL](#yasmin-pcl)
+14. [YASMIN Plugins Manager](#yasmin-plugins-manager)
+15. [Citations](#citations)
 
 ## Key Features
 
@@ -2030,16 +2031,16 @@ class Nav2State(ActionState):
 
         Calls the parent constructor to set up the action with:
         - Action type: NavigateToPose
-        - Action name: /navigate_to_pose
+        - Action name: navigate_to_pose (relative, so it follows the robot's namespace)
         - Callback for goal creation: create_goal_handler
-        - Outcomes: None, since it will use default outcomes (SUCCEED, ABORT, CANCEL)
+        - Callback for goals aborted by Nav2: abort_handler
+        - Outcomes: the default outcomes (SUCCEED, ABORT, CANCEL)
         """
         super().__init__(
             NavigateToPose,  # action type
-            "/navigate_to_pose",  # action name
+            "navigate_to_pose",  # relative action name
             self.create_goal_handler,  # callback to create the goal
-            None,  # outcomes
-            None,  # callback to process the response
+            abort_handler=self.abort_handler,  # callback for aborted goals
         )
 
     def create_goal_handler(self, blackboard: Blackboard) -> NavigateToPose.Goal:
@@ -2056,6 +2057,22 @@ class Nav2State(ActionState):
         goal.pose.pose = blackboard["pose"]
         goal.pose.header.frame_id = "map"  # Set the reference frame to 'map'
         return goal
+
+    def abort_handler(self, blackboard: Blackboard, result: NavigateToPose.Result) -> str:
+        """
+        Records why Nav2 aborted the goal.
+
+        Nav2 (Jazzy and later) reports the reason in error_code and error_msg.
+
+        Args:
+            blackboard (Blackboard): The blackboard instance holding current state data.
+            result (NavigateToPose.Result): The result of the aborted goal.
+
+        Returns:
+            str: Outcome of the state (ABORT).
+        """
+        blackboard["nav2_error"] = f"{result.error_code}: {result.error_msg}"
+        return ABORT
 
 
 def create_waypoints(blackboard: Blackboard) -> str:
@@ -3958,8 +3975,11 @@ public:
    */
   Nav2State()
       : yasmin_ros::ActionState<NavigateToPose>(
-            "/navigate_to_pose",
-            std::bind(&Nav2State::create_goal_handler, this, _1)) {}
+            "navigate_to_pose", // relative, follows the robot's namespace
+            std::bind(&Nav2State::create_goal_handler, this, _1)) {
+    this->set_abort_handler(
+        std::bind(&Nav2State::abort_handler, this, _1, _2));
+  }
 
   /**
    * @brief Creates a goal for navigation based on the current pose in the
@@ -3976,6 +3996,23 @@ public:
     goal.pose.pose = blackboard->get<Pose>("pose");
     goal.pose.header.frame_id = "map"; // Set the reference frame to 'map'
     return goal;
+  }
+
+  /**
+   * @brief Records why Nav2 aborted the goal.
+   *
+   * Nav2 (Jazzy and later) reports the reason in error_code and error_msg.
+   *
+   * @param blackboard Shared pointer to the blackboard instance.
+   * @param result The result of the aborted goal.
+   * @return std::string Outcome of the state (ABORT).
+   */
+  std::string abort_handler(yasmin::Blackboard::SharedPtr blackboard,
+                            NavigateToPose::Result::SharedPtr result) {
+    blackboard->set<std::string>("nav2_error",
+                                 std::to_string(result->error_code) + ": " +
+                                     result->error_msg);
+    return yasmin_ros::basic_outcomes::ABORT;
   }
 };
 
@@ -4095,26 +4132,26 @@ int main(int argc, char *argv[]) {
           std::initializer_list<std::string>{
               yasmin_ros::basic_outcomes::SUCCEED},
           create_waypoints),
-      std::map<std::string, std::string>{
+      yasmin::Transitions{
           {yasmin_ros::basic_outcomes::SUCCEED, "TAKING_RANDOM_WAYPOINTS"}});
   sm->add_state("TAKING_RANDOM_WAYPOINTS",
                 yasmin::CbState::make_shared(
                     std::initializer_list<std::string>{
                         yasmin_ros::basic_outcomes::SUCCEED},
                     take_random_waypoint),
-                std::map<std::string, std::string>{
+                yasmin::Transitions{
                     {yasmin_ros::basic_outcomes::SUCCEED, "NAVIGATING"}});
 
   nav_sm->add_state(
       "GETTING_NEXT_WAYPOINT",
       yasmin::CbState::make_shared(
           std::initializer_list<std::string>{END, HAS_NEXT}, get_next_waypoint),
-      std::map<std::string, std::string>{
+      yasmin::Transitions{
           {END, yasmin_ros::basic_outcomes::SUCCEED},
           {HAS_NEXT, "NAVIGATING"}});
   nav_sm->add_state(
       "NAVIGATING", std::make_shared<Nav2State>(),
-      std::map<std::string, std::string>{
+      yasmin::Transitions{
           {yasmin_ros::basic_outcomes::SUCCEED, "GETTING_NEXT_WAYPOINT"},
           {yasmin_ros::basic_outcomes::CANCEL,
            yasmin_ros::basic_outcomes::CANCEL},
@@ -4123,12 +4160,11 @@ int main(int argc, char *argv[]) {
 
   sm->add_state(
       "NAVIGATING", nav_sm,
-      std::map<std::string, std::string>{{yasmin_ros::basic_outcomes::SUCCEED,
-                                          yasmin_ros::basic_outcomes::SUCCEED},
-                                         {yasmin_ros::basic_outcomes::CANCEL,
-                                          yasmin_ros::basic_outcomes::CANCEL},
-                                         {yasmin_ros::basic_outcomes::ABORT,
-                                          yasmin_ros::basic_outcomes::ABORT}});
+      yasmin::Transitions{
+          {yasmin_ros::basic_outcomes::SUCCEED,
+           yasmin_ros::basic_outcomes::SUCCEED},
+          {yasmin_ros::basic_outcomes::CANCEL, yasmin_ros::basic_outcomes::CANCEL},
+          {yasmin_ros::basic_outcomes::ABORT, yasmin_ros::basic_outcomes::ABORT}});
 
   auto blackboard = yasmin::Blackboard::make_shared();
   blackboard->set<int>("waypoints_num",
@@ -4360,6 +4396,11 @@ The `TfBufferState` (available in both C++ and Python through `yasmin_ros`) crea
 blackboard under the keys `tf_buffer` and `tf_listener`. Subsequent states retrieve these objects
 from the blackboard to perform transform lookups without duplicating listener infrastructure.
 
+The buffer uses the node's ROS clock, so it follows `use_sim_time` and clears itself when simulated
+time jumps backwards. The pair is reused across executions, so the transform history is kept, and
+recreated when `cache_time_sec` changes. Both constructors accept an optional node. In C++, the
+buffer has a timer interface, so `waitForTransform()` works.
+
 ### TfBufferState
 
 |                 |                                   |
@@ -4453,6 +4494,20 @@ int main(int argc, char *argv[]) {
 }
 ```
 
+## ROS 2 and Nav2 Integration
+
+**Nodes.** ROS states, `TfBufferState` and `YasminViewerPub` accept an application-owned node; otherwise they share the `YasminNode` singleton, which spins its own executor thread. The singleton gets a unique random name unless the application names it first with `YasminNode::get_instance("my_fsm")` (C++, optionally with `rclcpp::NodeOptions`) or `YasminNode.get_instance("my_fsm")` (Python). A `__node` remapping on the command line takes precedence. `yasmin_factory_node` and `yasmin_factory_action_server` use their executable names, so parameter files can be keyed by node name. If the default context is shut down, the next `get_instance()` replaces the stale node.
+
+**Names and namespaces.** Use relative topic, service and action names (`navigate_to_pose`, not `/navigate_to_pose`) so a namespaced robot (`--ros-args -r __ns:=/robot1`) talks to its own Nav2 stack. The viewer topic is the relative `fsm_viewer`: run `yasmin_viewer_node` in the same namespace, or remap it.
+
+**Execution and callback groups.** States block the calling thread while their ROS requests complete. Run the state machine in its own thread (or the main thread), not inside a callback of an executor that must also deliver the responses, feedback, or messages the states wait for. With an application-owned node, spin it on an executor in another thread; use a separate or reentrant callback group if a callback must start a state machine.
+
+**Sensor QoS.** `MonitorState` defaults to a reliable depth-10 subscription. Pass `rclcpp::SensorDataQoS()` / `qos_profile_sensor_data` for sensor topics: a reliable subscription receives nothing from best-effort publishers. The subscription exists from construction and queued messages are processed oldest first; use `msg_queue = 1` to process the latest message.
+
+**Nav2 results.** Nav2 actions report why a goal failed in the result of an aborted goal (`error_code`, `error_msg` on Jazzy and later). Pass `abort_handler` (Python) or call `set_abort_handler()` (C++) to map that result to an outcome, e.g. to branch on `ComputePathToPose.Result.NO_VALID_PATH`. Without a handler, an aborted goal returns `aborted`. A rejected goal always returns `aborted`. Timeouts and state cancellation request cancellation of the remote goal.
+
+**Ctrl-C.** With `handle_sigint=True`, the first SIGINT cancels the running state machine while the ROS context stays valid, so active goals can still be canceled on their servers. The cancellation runs on a dispatcher thread, not in the signal handler. A second SIGINT before the state machine finishes is forwarded to the previously installed handler (rclcpp/rclpy shutdown, or the default action).
+
 ## YASMIN Editor
 
 The **YASMIN Editor** is a graphical user interface application for building YASMIN state machines using state plugins. It enables intuitive creation of state machines through drag-and-drop functionality, allowing you to:
@@ -4486,6 +4541,12 @@ ros2 run yasmin_viewer yasmin_viewer_node
 ```
 
 Once started, open http://localhost:5000/ in your browser to view your state machines.
+
+State machines are published on the relative topic `fsm_viewer`. For a namespaced robot, start the viewer in the same namespace:
+
+```shell
+ros2 run yasmin_viewer yasmin_viewer_node --ros-args -r __ns:=/robot1
+```
 
 ### YasminViewerPub API
 

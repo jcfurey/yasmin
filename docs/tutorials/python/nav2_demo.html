@@ -282,16 +282,16 @@ class Nav2State(ActionState):
 
         Calls the parent constructor to set up the action with:
         - Action type: NavigateToPose
-        - Action name: /navigate_to_pose
+        - Action name: navigate_to_pose (relative, so it follows the robot's namespace)
         - Callback for goal creation: create_goal_handler
-        - Outcomes: None, since it will use default outcomes (SUCCEED, ABORT, CANCEL)
+        - Callback for goals aborted by Nav2: abort_handler
+        - Outcomes: the default outcomes (SUCCEED, ABORT, CANCEL)
         """
         super().__init__(
             NavigateToPose,  # action type
-            "/navigate_to_pose",  # action name
+            "navigate_to_pose",  # relative action name
             self.create_goal_handler,  # callback to create the goal
-            None,  # outcomes
-            None,  # callback to process the response
+            abort_handler=self.abort_handler,  # callback for aborted goals
         )
 
     def create_goal_handler(self, blackboard: Blackboard) -&gt; NavigateToPose.Goal:
@@ -308,6 +308,22 @@ class Nav2State(ActionState):
         goal.pose.pose = blackboard["pose"]
         goal.pose.header.frame_id = "map"  # Set the reference frame to 'map'
         return goal
+
+    def abort_handler(self, blackboard: Blackboard, result: NavigateToPose.Result) -&gt; str:
+        """
+        Records why Nav2 aborted the goal.
+
+        Nav2 (Jazzy and later) reports the reason in error_code and error_msg.
+
+        Args:
+            blackboard (Blackboard): The blackboard instance holding current state data.
+            result (NavigateToPose.Result): The result of the aborted goal.
+
+        Returns:
+            str: Outcome of the state (ABORT).
+        """
+        blackboard["nav2_error"] = f"{result.error_code}: {result.error_msg}"
+        return ABORT
 
 
 def create_waypoints(blackboard: Blackboard) -&gt; str:

@@ -294,8 +294,11 @@ class Nav2State : public yasmin_ros::ActionState&lt;NavigateToPose&gt; {
 public:
   Nav2State()
       : yasmin_ros::ActionState&lt;NavigateToPose&gt;(
-            "/navigate_to_pose",
-            std::bind(&Nav2State::create_goal_handler, this, _1)) {}
+            "navigate_to_pose", // relative, follows the robot's namespace
+            std::bind(&Nav2State::create_goal_handler, this, _1)) {
+    this-&gt;set_abort_handler(
+        std::bind(&Nav2State::abort_handler, this, _1, _2));
+  }
 
   NavigateToPose::Goal create_goal_handler(
       yasmin::Blackboard::SharedPtr blackboard) {
@@ -303,6 +306,15 @@ public:
     goal.pose.pose = blackboard-&gt;get&lt;Pose&gt;("pose");
     goal.pose.header.frame_id = "map"; // Set the reference frame to 'map'
     return goal;
+  }
+
+  // Records why Nav2 (Jazzy and later) aborted the goal.
+  std::string abort_handler(yasmin::Blackboard::SharedPtr blackboard,
+                            NavigateToPose::Result::SharedPtr result) {
+    blackboard-&gt;set&lt;std::string&gt;("nav2_error",
+                                 std::to_string(result-&gt;error_code) + ": " +
+                                     result-&gt;error_msg);
+    return yasmin_ros::basic_outcomes::ABORT;
   }
 };
 
@@ -392,26 +404,26 @@ int main(int argc, char *argv[]) {
           std::initializer_list&lt;std::string&gt;{
               yasmin_ros::basic_outcomes::SUCCEED},
           create_waypoints),
-      std::map&lt;std::string, std::string&gt;{
+      yasmin::Transitions{
           {yasmin_ros::basic_outcomes::SUCCEED, "TAKING_RANDOM_WAYPOINTS"}});
   sm-&gt;add_state("TAKING_RANDOM_WAYPOINTS",
                 yasmin::CbState::make_shared(
                     std::initializer_list&lt;std::string&gt;{
                         yasmin_ros::basic_outcomes::SUCCEED},
                     take_random_waypoint),
-                std::map&lt;std::string, std::string&gt;{
+                yasmin::Transitions{
                     {yasmin_ros::basic_outcomes::SUCCEED, "NAVIGATING"}});
 
   nav_sm-&gt;add_state(
       "GETTING_NEXT_WAYPOINT",
       yasmin::CbState::make_shared(
           std::initializer_list&lt;std::string&gt;{END, HAS_NEXT}, get_next_waypoint),
-      std::map&lt;std::string, std::string&gt;{
+      yasmin::Transitions{
           {END, yasmin_ros::basic_outcomes::SUCCEED},
           {HAS_NEXT, "NAVIGATING"}});
   nav_sm-&gt;add_state(
       "NAVIGATING", std::make_shared&lt;Nav2State&gt;(),
-      std::map&lt;std::string, std::string&gt;{
+      yasmin::Transitions{
           {yasmin_ros::basic_outcomes::SUCCEED, "GETTING_NEXT_WAYPOINT"},
           {yasmin_ros::basic_outcomes::CANCEL,
            yasmin_ros::basic_outcomes::CANCEL},
@@ -420,12 +432,11 @@ int main(int argc, char *argv[]) {
 
   sm-&gt;add_state(
       "NAVIGATING", nav_sm,
-      std::map&lt;std::string, std::string&gt;{{yasmin_ros::basic_outcomes::SUCCEED,
-                                          yasmin_ros::basic_outcomes::SUCCEED},
-                                         {yasmin_ros::basic_outcomes::CANCEL,
-                                          yasmin_ros::basic_outcomes::CANCEL},
-                                         {yasmin_ros::basic_outcomes::ABORT,
-                                          yasmin_ros::basic_outcomes::ABORT}});
+      yasmin::Transitions{
+          {yasmin_ros::basic_outcomes::SUCCEED,
+           yasmin_ros::basic_outcomes::SUCCEED},
+          {yasmin_ros::basic_outcomes::CANCEL, yasmin_ros::basic_outcomes::CANCEL},
+          {yasmin_ros::basic_outcomes::ABORT, yasmin_ros::basic_outcomes::ABORT}});
 
   {
     yasmin_viewer::YasminViewerPub yasmin_pub(sm, "YASMIN_NAV2_DEMO");

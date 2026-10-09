@@ -85,6 +85,60 @@ Regression source: [C++ client cleanup and waits](../yasmin_ros/test/test_client
 
 Next work: **L04** signal handling; **R08–R09** Python node shutdown and TF clock ownership; **P04** a Python/native cloud bridge; completion of **L07/P02/P03** and legacy **R06** cleanup; then **S01–S04** sensor QoS, composition/callback contracts, and viewer namespacing.
 
+## Implementation progress — ROS 2 and Nav2 conventions (2026-10-09)
+
+This batch addresses L04, L07, R08, R09 and S01–S04, and seven additional findings (N01–N07) from a follow-up review of ROS 2 and Nav2 integration. Of the original 24 findings, **17 are now fixed, 4 are partially addressed (R06, P02, P03, S02), 2 are addressed by documented contracts (S01, S03), and 1 remains open (P04)**. All seven new findings are fixed.
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| L04 | Fixed | The SIGINT handler only updates lock-free atomics and writes to a self-pipe. A dispatcher thread, with SIGINT blocked, runs cancellation callbacks under the registry lock, so unregistering waits for an in-flight cancellation. The first SIGINT cancels the state machine and leaves the ROS context valid, so remote goals can still be canceled. A repeated SIGINT is forwarded to the previous handler (rclcpp/rclpy, or the default action). A generation token discards wake-ups from registrations that have ended. If another handler was installed on top during execution, YASMIN stays in its chain as a pass-through instead of removing it. Tests cover execution off the signal context (C++ and a Python `cancel_state` override), escalation, repeated executions, the disabled handler, and a handler installed later; 50/50 stress runs passed. |
+| L07 | Fixed | Joins are discovered in nested state machines of a region, with the one-join-per-region check applied across nesting. A region that finishes, including through a path that skips its JoinState, drops out of its barriers (`arrive_and_drop` semantics), so siblings are released. `reset()` restores the participant count for the next execution. The skip and nested cases fail on the previous implementation. |
+| R08 | Fixed | Python cleanup (executor, spin thread, node) runs whether or not the context is valid and is idempotent. `get_instance()` replaces an instance whose context was shut down, in Python and C++. C++ releases the stale node before calling `rclcpp::init()`, since rclcpp aborts when re-initializing the default context while nodes of the previous one are alive. |
+| R09 | Fixed | The Python buffer is created with the node, so it uses the node's ROS clock and its jump handling. Replacing the buffer unregisters the old listener's subscriptions, its `tf2_frames` service, and its clock jump callback. Both TF states accept an optional node. |
+| S01 | Documented | Both monitors keep the reliable default, which is the ROS default for generic topics; documentation directs sensor consumers to `SensorDataQoS` / `qos_profile_sensor_data`. The existing monitor demos already use it. `msg_queue < 1` is rejected (N07). |
+| S02 | Partial | `YasminNode::get_instance(name, NodeOptions)` and `YasminNode.get_instance(name)` name the singleton when they create it; a `__node` remap still takes precedence. The factory executables use their executable names, so parameter files keyed by node name apply. Custom contexts for the singleton are rejected with an explicit error; application-owned nodes remain the supported route. The C++ auto-initialization still passes no command-line arguments. The viewer node is now a registered component (`yasmin_viewer::YasminViewerNode`), verified by loading it into a container in a namespace. |
+| S03 | Documented | The README states the execution contract: states block their caller, so run the state machine outside callbacks of an executor that must deliver its responses, or use a separate or reentrant callback group. |
+| S04 | Fixed | Publishers and the viewer node use the relative topic `fsm_viewer`. For root-namespace nodes, this resolves to the previous `/fsm_viewer`. Verified end to end: a publisher in `/robot1` is shown by a viewer started in `/robot1`. Name collisions between unnamed machines in the same namespace remain. |
+| N01 | Fixed | **P1, reproduced.** Destroying the C++ `YasminNode` could hang: `Executor::cancel()` is lost if the spin thread has not yet entered `spin()`, which then blocks indefinitely while the destructor joins it. A create-then-destroy test sequence hung in 6 of 8 runs, with the backtrace in `stop_executor()`. Cancellation is now repeated until `spin()` returns: 0 of 40 runs hung. Python is unaffected because its executor's shutdown flag persists. |
+| N02 | Fixed | **P2, integration gap.** Action states discarded the result of aborted goals, so Nav2's `error_code` and `error_msg` (e.g. `NO_VALID_PATH`, `TF_ERROR`) were unreachable. `set_abort_handler()` (C++) and the `abort_handler` keyword argument (Python) map that result to an outcome. Rejected goals, which have no result, still return ABORT. Verified with the C++/Python test servers, and end to end with `nav2_msgs/NavigateToPose` in a namespace (`TF_ERROR` 9002 surfaced). |
+| N03 | Fixed | **P2, source-confirmed.** The C++ TF state created a new buffer and listener on every execution, which discarded TF history. Its buffer had no timer interface, so `waitForTransform()` threw. The listener writes into the buffer through a raw reference while the blackboard released the two independently, leaving a window in which the listener could outlive its buffer. The pair is now reused until `cache_time_sec` changes, the buffer has a `CreateTimerROS` interface (as in Nav2), and the listener owns a reference to its buffer. |
+| N04 | Fixed | **P2, reproduced with a mocked client.** The Python service state shared one response/event across invocations: a late response could complete a later invocation, and a cancellation between the check and the wait could be lost. Each invocation now owns its completion state, and the cancellation check and registration share a lock. The regression fails on the previous implementation. |
+| N05 | Fixed | **P3, reproduced.** The README/HTML Nav2 demos used the absolute `/navigate_to_pose`, which defeats namespacing. The Python demo passed `None` as outcomes, which raised `TypeError`, and the C++ demo did not compile (`std::map` transitions). Both now use the relative name and show the abort handler. The C++ demo compiles against `nav2_msgs`; the Python state ran against a NavigateToPose server. `setup_outcomes()` accepts `None`. |
+| N06 | Fixed | **P3, source-confirmed.** The Python viewer timer used the node's ROS clock, so it stopped while simulated time was paused; it now uses steady time, like the C++ wall timer. |
+| N07 | Fixed | **P3, source-confirmed.** Monitors accepted `msg_queue < 1`, which discards every message; both languages now reject it. |
+
+Other changes: the C++ `PublisherState` publishes an owned message, avoiding a copy with intra-process communication.
+
+Compatibility:
+
+- **Namespaced viewer users:** a namespaced node now publishes to `<ns>/fsm_viewer`. Start the viewer in that namespace or remap the topic.
+- **Ctrl-C:** a second SIGINT during a `handle_sigint` execution now reaches the previous handler.
+- **Factory node names:** the factory executables now have fixed node names, so two instances in one namespace need distinct `__node`/launch names.
+- **TF state reuse:** the C++ TF state returns the same buffer/listener across executions.
+- **API changes:** `yasmin_viewer` depends on `rclcpp_components`. Python `ServiceState.response_callback` is now private.
+
+Regression sources: [SIGINT](../yasmin/test/test_sigint_handler.cpp) and [Python SIGINT](../yasmin/test/test_state_machine.py), [orthogonal joins](../yasmin/test/test_orthogonal_state.cpp), [C++ node lifecycle](../yasmin_ros/test/test_yasmin_node.cpp), [Python node lifecycle and TF clock](../yasmin_ros/test/test_yasmin_node.py), [C++ TF](../yasmin_ros/test/test_tf_buffer_state.cpp), [action abort results](../yasmin_ros/test/test_action_client_state.cpp) ([Python](../yasmin_ros/test/test_action_client_state.py)), [service invocation isolation](../yasmin_ros/test/test_client_cancellation.py), and [monitor queue](../yasmin_ros/test/test_monitor_state.cpp) ([Python](../yasmin_ros/test/test_monitor_state.py)).
+
+Verification: `yasmin`, `yasmin_ros`, `yasmin_viewer`, `yasmin_factory` and `yasmin_pcl` rebuilt in Debug mode with `BUILD_TESTING=ON` on ROS 2 Lyrical (rclcpp 32, Cyclone DDS), with no new compiler warnings. **464 individual cases passed, with zero errors, failures, or skips.** `colcon test-result` reports 515 records, which include CTest wrapper entries.
+
+| Package | `colcon` records | Individual cases passed |
+| --- | ---: | ---: |
+| `yasmin` | 266 | 251 |
+| `yasmin_ros` | 133 | 114 |
+| `yasmin_factory` | 56 | 53 |
+| `yasmin_pcl` | 60 | 46 |
+
+Each new regression for L07, N01 and N04 was also run against the previous implementation, where it failed or hung. Additional checks:
+
+- The C++ Nav2 demo from the README compiles against `nav2_msgs`.
+- The README's Python `Nav2State` ran against a NavigateToPose server in `/robot1`.
+- The viewer component loaded into `component_container` in `/robot1` and served HTTP, and the standalone executable still runs.
+- A namespaced `YasminViewerPub` appeared in a viewer started in the same namespace.
+
+Builds used a scratch workspace outside the repository, with a private `ROS_DOMAIN_ID` and `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`. `git diff --check` passed.
+
+Remaining work: **P04** (Python/native cloud bridge); **P02/P03** completion; **S02** custom contexts for the singleton and passing C++ command-line arguments through auto-initialization; distinct identities for same-named machines in one viewer namespace. **R06** cleanup remains unavailable on Foxy, which is end-of-life. Older ROS distributions advertised by CI have not been built in this batch.
+
 ## Findings inventory
 
 | ID | Priority | Area | Finding | Evidence |
@@ -113,6 +167,13 @@ Next work: **L04** signal handling; **R08–R09** Python node shutdown and TF cl
 | S02 | P2 | ROS contexts/composition | Default runtime nodes hide context, naming, and executor ownership | Integration gap |
 | S03 | P2 | Callback execution | Blocking state execution can deadlock a caller's ROS callback group | Conditional integration gap |
 | S04 | P3 | Viewer namespace | Absolute `/fsm_viewer` topic bypasses node namespaces | Source-confirmed convention deviation |
+| N01 | P1 | C++ default node | Destruction can hang when executor cancellation precedes `spin()` | Reproduced (follow-up review) |
+| N02 | P2 | Action results | Aborted-goal results (Nav2 `error_code`) are discarded | Integration gap (follow-up review) |
+| N03 | P2 | C++ TF state | Buffer recreated per execution, no timer interface, listener may outlive buffer | Source-confirmed (follow-up review) |
+| N04 | P2 | Python service | Responses and cancellation are not tied to an invocation | Reproduced with a mocked client (follow-up review) |
+| N05 | P3 | Nav2 demos | Absolute action name; Python demo raises, C++ demo does not compile | Reproduced (follow-up review) |
+| N06 | P3 | Python viewer | Publication stops while simulated time is paused | Source-confirmed (follow-up review) |
+| N07 | P3 | Monitors | `msg_queue < 1` silently discards every message | Source-confirmed (follow-up review) |
 
 ### L01 — Unchecked C++ blackboard casts
 
