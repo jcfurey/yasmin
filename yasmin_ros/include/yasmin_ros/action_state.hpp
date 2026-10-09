@@ -317,6 +317,26 @@ public:
   }
 
   /**
+   * @brief Bound the wait for the server to accept or reject the goal.
+   *
+   * Like the server timeout of Nav2's behavior tree action nodes, this does
+   * not limit how long an accepted goal may run (see response_timeout). If the
+   * server does not respond in time, the state requests cancellation, so a
+   * goal accepted later is canceled, and returns TIMEOUT. This adds the
+   * TIMEOUT outcome, so call it before adding the state to a state machine.
+   *
+   * @param timeout Maximum wait for the goal response; zero disables it.
+   */
+  void set_goal_response_timeout(std::chrono::nanoseconds timeout) {
+    this->goal_response_timeout_ = timeout;
+    if (timeout > std::chrono::nanoseconds::zero()) {
+      this->outcomes.insert(basic_outcomes::TIMEOUT);
+      this->set_outcome_description(
+          basic_outcomes::TIMEOUT, "The action server did not respond in time");
+    }
+  }
+
+  /**
    * @brief Notify that the action cancellation has completed.
    *
    * This function is called to notify that the action cancellation process
@@ -428,15 +448,19 @@ public:
           execution->completed = true;
         }
       }
+      execution->responded.store(true);
       bool cancel = false;
       {
         std::lock_guard<std::mutex> guard_lock(callback_guard->mutex);
         if (callback_guard->alive) {
           std::lock_guard<std::mutex> lock(this->action_done_mutex);
           cancel = this->action_epoch_.load() != epoch || this->is_canceled();
-          if (this->action_epoch_.load() == epoch && !handle) {
-            this->action_status = rclcpp_action::ResultCode::ABORTED;
-            this->action_done_.store(true);
+          if (this->action_epoch_.load() == epoch) {
+            if (!handle) {
+              this->action_status = rclcpp_action::ResultCode::ABORTED;
+              this->action_done_.store(true);
+            }
+            // Also wakes a wait bounded by the goal response timeout.
             this->action_done_cond.notify_all();
           }
         } else {
@@ -491,8 +515,23 @@ public:
 
     // Send the goal to the action server
     YASMIN_LOG_INFO("Sending goal to action '%s'", this->action_name.c_str());
+    const auto sent = std::chrono::steady_clock::now();
     this->action_client->async_send_goal(goal, send_goal_options);
     std::unique_lock<std::mutex> lock(this->action_done_mutex);
+
+    if (this->goal_response_timeout_ > std::chrono::nanoseconds::zero() &&
+        !this->action_done_cond.wait_until(
+            lock, sent + this->goal_response_timeout_, [this, &execution]() {
+              return execution->responded.load() || this->action_done_.load() ||
+                     this->is_canceled();
+            })) {
+      lock.unlock();
+      YASMIN_LOG_WARN("Action '%s' did not respond to the goal in time",
+                      this->action_name.c_str());
+      // A goal accepted after this point is canceled by its response callback.
+      cancel_execution(execution, this->action_client);
+      return basic_outcomes::TIMEOUT;
+    }
 
     if (this->response_timeout > 0) {
       // Use a single total timeout instead of a retry loop that doesn't
@@ -500,9 +539,10 @@ public:
       const auto total_timeout =
           std::chrono::seconds(static_cast<int64_t>(this->response_timeout) *
                                (static_cast<int64_t>(this->maximum_retry) + 1));
-      if (!this->action_done_cond.wait_for(lock, total_timeout, [this]() {
-            return this->action_done_.load() || this->is_canceled();
-          })) {
+      if (!this->action_done_cond.wait_until(
+              lock, sent + total_timeout, [this]() {
+                return this->action_done_.load() || this->is_canceled();
+              })) {
         lock.unlock();
         cancel_execution(execution, this->action_client);
         return basic_outcomes::TIMEOUT;
@@ -585,6 +625,7 @@ private:
     bool cancel_requested{false};
     bool cancel_sent{false};
     bool completed{false};
+    std::atomic_bool responded{false};
   };
   std::shared_ptr<GoalExecution> execution_;
 
@@ -619,6 +660,8 @@ private:
   FeedbackHandler feedback_handler;
   /// @brief Handler function for processing aborted results.
   ResultHandler abort_handler;
+  /// @brief Maximum wait for the goal response; zero disables it.
+  std::chrono::nanoseconds goal_response_timeout_{0};
 
   /// @brief Maximum time to wait for the action server.
   int wait_timeout;

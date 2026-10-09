@@ -14,7 +14,7 @@ from example_interfaces.srv import AddTwoInts
 from std_msgs.msg import String
 
 from yasmin_ros import ActionState, ServiceState
-from yasmin_ros.basic_outcomes import ABORT, CANCEL, TIMEOUT
+from yasmin_ros.basic_outcomes import ABORT, CANCEL, SUCCEED, TIMEOUT
 from yasmin_ros.ros_clients_cache import ROSClientsCache
 
 
@@ -180,6 +180,40 @@ def test_old_response_cannot_complete_reused_service():
         pending.set_result(AddTwoInts.Response(sum=2))
         worker.join(timeout=1)
         assert results.get(timeout=1) == "new"
+    finally:
+        state.cancel_state()
+        worker.join(timeout=1)
+
+
+def test_goal_response_timeout_cancels_late_goal():
+    client = ActionClientStub()
+    state = action_state(client, goal_response_timeout=0.1)
+    worker, results = start(state)
+    pending = client.sent.get(timeout=1)
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert results.get(timeout=1) == TIMEOUT
+    handle, _ = goal_handle()
+    pending.set_result(handle)
+    handle.cancel_goal_async.assert_called_once()
+
+
+def test_goal_response_timeout_does_not_limit_accepted_goal():
+    client = ActionClientStub()
+    state = action_state(client, goal_response_timeout=0.1)
+    worker, results = start(state)
+    pending = client.sent.get(timeout=1)
+    try:
+        handle, result = goal_handle()
+        pending.set_result(handle)
+        sleep(0.3)
+        assert results.empty()
+        result.set_result(
+            SimpleNamespace(result=Fibonacci.Result(), status=GoalStatus.STATUS_SUCCEEDED)
+        )
+        worker.join(timeout=1)
+        assert results.get(timeout=1) == SUCCEED
+        handle.cancel_goal_async.assert_not_called()
     finally:
         state.cancel_state()
         worker.join(timeout=1)

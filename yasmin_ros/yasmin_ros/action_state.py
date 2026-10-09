@@ -38,6 +38,7 @@ from yasmin_ros.ros_state_utils import (
 @dataclass
 class _ActionExecution:
     done: Event = field(default_factory=Event)
+    responded: Event = field(default_factory=Event)
     result: Any = None
     status: int = GoalStatus.STATUS_UNKNOWN
     goal_handle: Any = None
@@ -67,6 +68,7 @@ class ActionState(State):
         response_timeout: float = None,
         maximum_retry: int = 3,
         abort_handler: Callable = None,
+        goal_response_timeout: float = None,
     ) -> None:
         """
         Construct an ActionState with a specific action name and goal handler.
@@ -90,6 +92,11 @@ class ActionState(State):
                 of a goal aborted by the server to an outcome. Servers such as Nav2 report the failure
                 reason in this result (e.g. ``error_code``). Without it, or for a rejected goal, the
                 state returns ABORT.
+            goal_response_timeout (float, optional): The maximum time to wait for the server to
+                accept or reject the goal. Like the server timeout of Nav2's behavior tree action
+                nodes, it does not limit how long an accepted goal runs. On expiry the state
+                requests cancellation, so a goal accepted later is canceled, and returns TIMEOUT.
+                Default is None (wait indefinitely).
 
         Raises:
             ValueError: If create_goal_handler is None.
@@ -111,6 +118,8 @@ class ActionState(State):
         self._wait_timeout: float = wait_timeout
         ## Timeout for the action response.
         self._response_timeout: float = response_timeout
+        ## Timeout for the server to accept or reject the goal.
+        self._goal_response_timeout: float = goal_response_timeout
 
         ## Maximum number of retries.
         self._maximum_retry: int = maximum_retry
@@ -120,7 +129,9 @@ class ActionState(State):
             outcomes,
             {SUCCEED, ABORT, CANCEL},
             add_timeout=(
-                self._wait_timeout is not None or self._response_timeout is not None
+                self._wait_timeout is not None
+                or self._response_timeout is not None
+                or self._goal_response_timeout is not None
             ),
         )
 
@@ -167,6 +178,7 @@ class ActionState(State):
             execution = self._execution
             if execution is not None:
                 execution.cancel_requested = True
+                execution.responded.set()
                 execution.done.set()
         self._cancel_goal(execution)
 
@@ -220,6 +232,16 @@ class ActionState(State):
         send_goal_future.add_done_callback(
             lambda future: self._goal_response_callback(future, execution)
         )
+
+        if self._goal_response_timeout is not None and not execution.responded.wait(
+            self._goal_response_timeout
+        ):
+            yasmin.YASMIN_LOG_WARN(
+                f"Action '{self._action_name}' did not respond to the goal in time"
+            )
+            # A goal accepted after this point is canceled by its response callback.
+            self._cancel_goal(execution)
+            return TIMEOUT
 
         outcome = wait_with_retry(
             lambda: execution.done.wait(self._response_timeout),
@@ -280,6 +302,8 @@ class ActionState(State):
             )
             execution.status = GoalStatus.STATUS_UNKNOWN
             execution.done.set()
+        finally:
+            execution.responded.set()
 
     def _get_result_callback(self, future: Future, execution: _ActionExecution) -> None:
         # Each invocation owns its event and result. Late callbacks can only

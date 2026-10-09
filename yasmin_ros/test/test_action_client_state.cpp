@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -48,6 +50,9 @@ public:
         std::bind(&AuxNode::handle_accepted, this, std::placeholders::_1));
   }
 
+  /// Set when the goal accepted late (order 99) receives a cancel request.
+  std::atomic_bool late_goal_canceled{false};
+
 private:
   rclcpp_action::Server<Fibonacci>::SharedPtr action_server_;
 
@@ -55,13 +60,18 @@ private:
   handle_goal(const rclcpp_action::GoalUUID &uuid,
               std::shared_ptr<const Fibonacci::Goal> goal) {
     (void)uuid;
-    (void)goal;
+    if (goal->order == 99) {
+      // A server that is slow to accept, e.g. a busy Nav2 BT navigator.
+      std::this_thread::sleep_for(1500ms);
+    }
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
   rclcpp_action::CancelResponse
   handle_cancel(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
-    (void)goal_handle;
+    if (goal_handle->get_goal()->order == 99) {
+      late_goal_canceled.store(true);
+    }
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
@@ -245,6 +255,44 @@ TEST_F(TestActionClientState, TestActionClientStateAbortHandler) {
 
   EXPECT_EQ((*state)(blackboard), "no_valid_path");
   EXPECT_EQ(blackboard->get<int32_t>("error_code"), -7);
+}
+
+TEST_F(TestActionClientState, TestGoalResponseTimeoutCancelsLateGoal) {
+  using Fibonacci = example_interfaces::action::Fibonacci;
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto state = std::make_shared<ActionState<Fibonacci>>(
+      "test", [](yasmin::Blackboard::SharedPtr) {
+        auto goal = Fibonacci::Goal();
+        goal.order = 99;
+        return goal;
+      });
+  state->set_goal_response_timeout(300ms);
+  EXPECT_TRUE(state->get_outcomes().count(TIMEOUT));
+
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ((*state)(blackboard), std::string(TIMEOUT));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 1200ms);
+
+  // The goal the server accepts afterwards is canceled.
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!aux_node->late_goal_canceled.load() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(20ms);
+  }
+  EXPECT_TRUE(aux_node->late_goal_canceled.load());
+}
+
+TEST_F(TestActionClientState, TestGoalResponseTimeoutDoesNotLimitRunningGoal) {
+  using Fibonacci = example_interfaces::action::Fibonacci;
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto state = std::make_shared<ActionState<Fibonacci>>(
+      "test", [](yasmin::Blackboard::SharedPtr) {
+        auto goal = Fibonacci::Goal();
+        goal.order = 0; // the server runs this goal for 5 s
+        return goal;
+      });
+  state->set_goal_response_timeout(300ms);
+  EXPECT_EQ((*state)(blackboard), std::string(SUCCEED));
 }
 
 TEST_F(TestActionClientState, TestActionClientStateRetryWaitTimeout) {
