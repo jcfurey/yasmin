@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 #include "yasmin/blackboard.hpp"
 
@@ -30,6 +31,26 @@ protected:
 TEST_F(TestBlackboard, TestGet) {
   blackboard.set<std::string>("foo", "foo");
   EXPECT_EQ(blackboard.get<std::string>("foo"), "foo");
+}
+
+TEST_F(TestBlackboard, RejectsMismatchedTypesAndPreservesStoredValue) {
+  blackboard.set<float>("number", 1.0F);
+  EXPECT_THROW(blackboard.get<int>("number"), std::runtime_error);
+  EXPECT_FLOAT_EQ(blackboard.get<float>("number"), 1.0F);
+  blackboard.set<std::vector<int>>("items", {1, 2});
+  EXPECT_THROW(blackboard.get<std::string>("items"), std::runtime_error);
+  blackboard.set<std::shared_ptr<int>>("pointer", std::make_shared<int>(3));
+  EXPECT_THROW(blackboard.get<int>("pointer"), std::runtime_error);
+}
+
+TEST_F(TestBlackboard, ChecksTypesThroughRemappingAndSharedCopies) {
+  blackboard.set<float>("stored", 1.0F);
+  blackboard.set_remappings({{"input", "stored"}});
+  Blackboard copy(blackboard);
+  EXPECT_THROW(copy.get<double>("input"), std::runtime_error);
+  copy.set<std::string>("input", "replacement");
+  EXPECT_THROW(blackboard.get<float>("input"), std::runtime_error);
+  EXPECT_EQ(blackboard.get<std::string>("input"), "replacement");
 }
 
 TEST_F(TestBlackboard, TestDelete) {

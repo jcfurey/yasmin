@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -151,7 +152,8 @@ TEST_F(TestYasminFactory, TestPythonStateParametersSurviveCppFactoryWrapping) {
 
   auto blackboard = yasmin::Blackboard::make_shared();
   EXPECT_EQ((*sm)(blackboard), "end");
-  EXPECT_EQ(blackboard->get<int>("configured_sleep_ms"), 25);
+  // Python scalar integers are stored as int64_t by BlackboardPyWrapper.
+  EXPECT_EQ(blackboard->get<std::int64_t>("configured_sleep_ms"), 25);
 }
 
 TEST_F(TestYasminFactory, TestCreateStateInvalidType) {

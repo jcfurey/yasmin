@@ -147,7 +147,7 @@ public:
    * @tparam T The type of the value to retrieve.
    * @param key The key associated with the value.
    * @return The value associated with the specified key.
-   * @throws std::runtime_error if the key does not exist.
+   * @throws std::runtime_error if the key does not exist or has another type.
    */
   template <class T> T get(const std::string &key) const {
 
@@ -162,8 +162,18 @@ public:
                                "' does not exist in the blackboard");
     }
 
-    // Return the value casted to the requested type
-    return *(std::static_pointer_cast<T>(it->second));
+    using DecayT = std::decay_t<T>;
+    const std::string requested_type = demangle_type(typeid(DecayT).name());
+    const auto type_it = this->storage->type_registry.find(remapped_key);
+    if (type_it == this->storage->type_registry.end() ||
+        type_it->second != requested_type) {
+      throw std::runtime_error(
+          "Element '" + key + "' in the blackboard has type '" +
+          (type_it == this->storage->type_registry.end() ? "unknown"
+                                                         : type_it->second) +
+          "', requested '" + requested_type + "'");
+    }
+    return *(std::static_pointer_cast<DecayT>(it->second));
   }
 
   /**
