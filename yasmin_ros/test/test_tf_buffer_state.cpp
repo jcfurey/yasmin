@@ -135,6 +135,60 @@ TEST_F(TestTfBufferState, TestLookupFromFollowingState) {
   publisher_thread.join();
 }
 
+TEST_F(TestTfBufferState, TestBufferIsReusedAcrossExecutions) {
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto state = std::make_shared<TfBufferState>();
+  state->configure();
+
+  ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
+  const auto first = blackboard->get<std::shared_ptr<tf2_ros::Buffer>>(
+      "tf_buffer");
+  ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
+  EXPECT_EQ(blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer"),
+            first);
+
+  state->set_parameter<double>("cache_time_sec", 5.0);
+  state->configure();
+  ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
+  EXPECT_NE(blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer"),
+            first);
+}
+
+TEST_F(TestTfBufferState, TestBufferSupportsWaitForTransform) {
+  auto node = std::make_shared<rclcpp::Node>("tf_wait_cpp_test");
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto state = std::make_shared<TfBufferState>(node);
+  state->configure();
+  ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
+
+  auto buffer =
+      blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
+  // Throws CreateTimerInterfaceException without a timer interface.
+  EXPECT_NO_THROW(buffer->waitForTransform(
+      "map", "base_link", tf2::TimePointZero, std::chrono::milliseconds(10),
+      [](const tf2_ros::TransformStampedFuture &) {}));
+}
+
+TEST_F(TestTfBufferState, TestListenerKeepsItsBufferAlive) {
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto state = std::make_shared<TfBufferState>();
+  state->configure();
+  ASSERT_EQ((*state)(blackboard), std::string(SUCCEED));
+
+  std::weak_ptr<tf2_ros::Buffer> buffer =
+      blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
+  auto listener =
+      blackboard->get<std::shared_ptr<tf2_ros::TransformListener>>(
+          "tf_listener");
+  blackboard->remove("tf_buffer");
+  state.reset();
+
+  EXPECT_FALSE(buffer.expired());
+  blackboard->remove("tf_listener");
+  listener.reset();
+  EXPECT_TRUE(buffer.expired());
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

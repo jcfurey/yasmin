@@ -245,7 +245,8 @@ int main(int argc, char *argv[]) {
   yasmin_ros::set_ros_loggers();
 
   {
-    auto node = yasmin_ros::YasminNode::get_instance();
+    auto node =
+        yasmin_ros::YasminNode::get_instance("yasmin_factory_action_server");
     yasmin_factory::YasminFactoryActionServer server(node);
 
     while (rclcpp::ok()) {

@@ -53,9 +53,19 @@ public:
   YASMIN_PTR_ALIASES(TfBufferState)
 
   /**
-   * @brief Construct a new TfBufferState.
+   * @brief Construct a new TfBufferState using the default YasminNode.
    */
   TfBufferState();
+
+  /**
+   * @brief Construct a new TfBufferState using an application-owned node.
+   *
+   * The listener does not spin its own thread, so the node must be spun by
+   * an executor. The buffer uses the node's clock (and thus `use_sim_time`).
+   *
+   * @param node Node used for the clock and the tf subscriptions.
+   */
+  explicit TfBufferState(const rclcpp::Node::SharedPtr &node);
 
   /**
    * @brief Read the configured parameters.
@@ -63,8 +73,11 @@ public:
   void configure() override;
 
   /**
-   * @brief Create the tf2 buffer/listener pair and store them in the
-   * blackboard.
+   * @brief Store the tf2 buffer/listener pair in the blackboard.
+   *
+   * The pair is created on first execution and reused afterwards, so the
+   * transform history survives across executions. It is recreated when the
+   * cache time changes.
    *
    * @param blackboard Blackboard used to share the created objects.
    * @return The execution outcome.
@@ -76,6 +89,12 @@ private:
   rclcpp::Node::SharedPtr node_;
   /// @brief Buffer cache duration in seconds.
   double cache_time_sec_;
+  /// @brief Buffer reused across executions.
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  /// @brief Listener feeding tf_buffer_.
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  /// @brief Cache time used to create tf_buffer_.
+  double buffer_cache_time_sec_{0.0};
 };
 
 } // namespace yasmin_ros

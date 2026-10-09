@@ -15,6 +15,7 @@
 #ifndef YASMIN_ROS__YASMIN_NODE_HPP_
 #define YASMIN_ROS__YASMIN_NODE_HPP_
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <thread>
@@ -45,6 +46,16 @@ protected:
    */
   explicit YasminNode();
 
+  /**
+   * @brief Initializes the node with the given name and options.
+   *
+   * @param node_name Node name; empty selects a unique random name.
+   * @param options Node options. They must use the default context, which the
+   * internal executor spins.
+   * @throws std::invalid_argument if the options select another context.
+   */
+  YasminNode(const std::string &node_name, const rclcpp::NodeOptions &options);
+
 public:
   /** @brief Deleted copy constructor (singleton). */
   YasminNode(YasminNode &other) = delete;
@@ -65,6 +76,22 @@ public:
    * @return A shared pointer to the singleton instance of YasminNode.
    */
   static YasminNode::SharedPtr get_instance();
+
+  /**
+   * @brief Provides access to the singleton, creating it with a given name.
+   *
+   * The name and options apply only if this call creates the node; an
+   * existing instance is returned unchanged. A `__node` remapping passed on
+   * the command line still takes precedence. An instance whose context has
+   * been shut down is replaced, as with get_instance().
+   *
+   * @param node_name Node name; empty selects a unique random name.
+   * @param options Node options using the default context.
+   * @return A shared pointer to the singleton instance of YasminNode.
+   */
+  static YasminNode::SharedPtr
+  get_instance(const std::string &node_name,
+               const rclcpp::NodeOptions &options = rclcpp::NodeOptions());
 
   /**
    * @brief Destroy the singleton instance if it exists.
@@ -90,6 +117,8 @@ private:
 #endif
   /// @brief Thread for spinning the node.
   std::unique_ptr<std::thread> spin_thread;
+  /// @brief Set when the executor's spin() has returned.
+  std::atomic_bool spin_finished{false};
 };
 
 } // namespace yasmin_ros

@@ -28,7 +28,7 @@ def main() -> None:
     rclpy.init()
 
     # Get the state machine file parameter
-    node = YasminNode.get_instance()
+    node = YasminNode.get_instance("yasmin_factory_node")
     node.declare_parameter("state_machine_file", "")
     sm_file = node.get_parameter("state_machine_file").get_parameter_value().string_value
     if not sm_file:

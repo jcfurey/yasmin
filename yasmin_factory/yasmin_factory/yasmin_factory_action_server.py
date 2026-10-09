@@ -129,7 +129,7 @@ class FactoryActionServer:
 def main():
     rclpy.init()
     set_ros_loggers()
-    node = YasminNode.get_instance()
+    node = YasminNode.get_instance("yasmin_factory_action_server")
     server = FactoryActionServer(node)
     try:
         while rclpy.ok():

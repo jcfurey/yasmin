@@ -165,6 +165,7 @@ if(BUILD_TESTING)
     test_tf_buffer_state
     test_complex_scenarios
     test_client_cancellation
+    test_yasmin_node
   )
 
   foreach(_test_name ${_pytest_tests})
@@ -179,6 +180,7 @@ if(BUILD_TESTING)
     test_tf_buffer_state
     test_complex_scenarios
     test_client_cleanup
+    test_yasmin_node
   )
 
   foreach(_test_name ${_gtest_tests})

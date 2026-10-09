@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 from rclpy.duration import Duration
+from rclpy.node import Node
 from tf2_ros import Buffer, TransformListener
 from yasmin_ros.basic_outcomes import ABORT, SUCCEED
 from yasmin_ros.ros_state_utils import resolve_node
@@ -30,9 +33,15 @@ class TfBufferState(State):
     for transform lookups.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, node: Optional[Node] = None) -> None:
+        """
+        Args:
+            node (Node, optional): Node providing the clock and the tf
+                subscriptions. Defaults to the YasminNode singleton. The node
+                must be spun by an executor.
+        """
         super().__init__([SUCCEED, ABORT])
-        self._node = None
+        self._node = node
         self._cache_time_sec = 10.0
         self._prev_cache_time_sec = None
         self._prev_tf_buffer = None
@@ -79,11 +88,13 @@ class TfBufferState(State):
                 self._prev_tf_listener is None
                 or self._prev_cache_time_sec != self._cache_time_sec
             ):
-                # Clean up previous instances to avoid resource leaks
-                self._prev_tf_listener = None
-                self._prev_tf_buffer = None
+                self._release_tf()
 
-                tf_buffer = Buffer(cache_time=Duration(seconds=self._cache_time_sec))
+                # Use the node's ROS clock (use_sim_time), as C++ does.
+                tf_buffer = Buffer(
+                    cache_time=Duration(seconds=self._cache_time_sec),
+                    node=self._node,
+                )
                 tf_listener = TransformListener(tf_buffer, self._node)
                 self._prev_tf_buffer = tf_buffer
                 self._prev_tf_listener = tf_listener
@@ -95,3 +106,17 @@ class TfBufferState(State):
         except Exception as exc:
             yasmin.YASMIN_LOG_ERROR(f"TfBufferState failed to create tf2 objects: {exc}")
             return ABORT
+
+    def _release_tf(self) -> None:
+        # The node keeps the listener's subscriptions and the buffer's
+        # service alive, and the clock keeps the jump callback; release them
+        # explicitly when replacing the pair.
+        listener, self._prev_tf_listener = self._prev_tf_listener, None
+        buffer, self._prev_tf_buffer = self._prev_tf_buffer, None
+        if listener is not None:
+            listener.unregister()
+        if buffer is not None:
+            if getattr(buffer, "srv", None) is not None:
+                self._node.destroy_service(buffer.srv)
+            if getattr(buffer, "jump_handle", None) is not None:
+                buffer.jump_handle.unregister()

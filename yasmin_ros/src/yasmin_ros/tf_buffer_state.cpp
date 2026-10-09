@@ -21,6 +21,12 @@
 
 #include <pluginlib/class_list_macros.hpp>
 
+#if __has_include(<tf2_ros/create_timer_ros.hpp>)
+#include <tf2_ros/create_timer_ros.hpp>
+#else
+#include <tf2_ros/create_timer_ros.h>
+#endif
+
 #if __has_include(<tf2/time.hpp>)
 #include <tf2/time.hpp>
 #else
@@ -40,9 +46,11 @@ tf2::Duration to_tf_duration(const double seconds) {
 
 } // namespace
 
-TfBufferState::TfBufferState()
+TfBufferState::TfBufferState() : TfBufferState(nullptr) {}
+
+TfBufferState::TfBufferState(const rclcpp::Node::SharedPtr &node)
     : yasmin::State({basic_outcomes::SUCCEED, basic_outcomes::ABORT}),
-      node_(nullptr), cache_time_sec_(10.0) {
+      node_(node), cache_time_sec_(10.0) {
   this->set_description(
       "Creates a shared tf2 buffer and transform listener and writes them to "
       "blackboard keys 'tf_buffer' and 'tf_listener'. Following states can "
@@ -79,26 +87,48 @@ std::string TfBufferState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   }
 
   try {
-    auto tf_buffer = std::make_shared<tf2_ros::Buffer>(
-        this->node_->get_clock(), to_tf_duration(this->cache_time_sec_));
-
-    auto tf_listener =
-        std::make_shared<tf2_ros::TransformListener>(*tf_buffer,
+    if (!this->tf_buffer_ ||
+        this->buffer_cache_time_sec_ != this->cache_time_sec_) {
+      this->tf_listener_.reset();
+      auto tf_buffer = std::make_shared<tf2_ros::Buffer>(
+          this->node_->get_clock(), to_tf_duration(this->cache_time_sec_));
+      // Needed for Buffer::waitForTransform(), as in Nav2.
+      tf_buffer->setCreateTimerInterface(
+          std::make_shared<tf2_ros::CreateTimerROS>(
+              this->node_->get_node_base_interface(),
+              this->node_->get_node_timers_interface()));
+      // The listener writes into the buffer from subscription callbacks.
+      // Blackboard entries are released independently, so the listener
+      // keeps its buffer alive (members are destroyed in reverse order).
+      struct ListenerOwner {
+        std::shared_ptr<tf2_ros::Buffer> buffer;
+        std::shared_ptr<tf2_ros::TransformListener> listener;
+      };
+      auto owner = std::make_shared<ListenerOwner>();
+      owner->buffer = tf_buffer;
+      owner->listener = std::make_shared<tf2_ros::TransformListener>(
+          *tf_buffer,
 #if __has_include("rclcpp/version.h")
 #include "rclcpp/version.h"
 #if RCLCPP_VERSION_GTE(33, 0, 2)
-                                                     *this->node_,
+          *this->node_,
 #else
-                                                     this->node_,
+          this->node_,
 #endif
 #else
-                                                     this->node_,
+          this->node_,
 #endif
-                                                     false);
+          false);
+      this->tf_listener_ = std::shared_ptr<tf2_ros::TransformListener>(
+          owner, owner->listener.get());
+      this->tf_buffer_ = std::move(tf_buffer);
+      this->buffer_cache_time_sec_ = this->cache_time_sec_;
+    }
 
-    blackboard->set<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer", tf_buffer);
-    blackboard->set<std::shared_ptr<tf2_ros::TransformListener>>("tf_listener",
-                                                                 tf_listener);
+    blackboard->set<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer",
+                                                      this->tf_buffer_);
+    blackboard->set<std::shared_ptr<tf2_ros::TransformListener>>(
+        "tf_listener", this->tf_listener_);
     return basic_outcomes::SUCCEED;
   } catch (const std::exception &e) {
     YASMIN_LOG_ERROR("TfBufferState failed to create tf2 objects: %s",

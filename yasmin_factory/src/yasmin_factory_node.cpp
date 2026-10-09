@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
   YASMIN_LOG_INFO("yasmin_factory_node");
 
   // Get the state machine file parameter
-  auto node = yasmin_ros::YasminNode::get_instance();
+  auto node = yasmin_ros::YasminNode::get_instance("yasmin_factory_node");
   node->declare_parameter("state_machine_file", "");
   std::string sm_file = node->get_parameter("state_machine_file")
                             .get_parameter_value()

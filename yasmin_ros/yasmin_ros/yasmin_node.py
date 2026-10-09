@@ -14,7 +14,8 @@
 
 import atexit
 import uuid
-from threading import Thread, RLock
+from threading import Thread, RLock, current_thread
+from typing import Optional
 
 import yasmin_ros
 
@@ -42,11 +43,18 @@ class YasminNode(Node):
     _lock: RLock = RLock()
 
     @staticmethod
-    def get_instance() -> "YasminNode":
+    def get_instance(node_name: Optional[str] = None) -> "YasminNode":
         """
         Provides access to the singleton instance of YasminNode.
 
         This method ensures there is only one instance of YasminNode running.
+        An instance whose context has been shut down is replaced, so states
+        created after re-initializing rclpy do not use a dead node.
+
+        Args:
+            node_name (str, optional): Name used if this call creates the
+                node. Defaults to a unique random name. A ``__node`` remapping
+                passed on the command line takes precedence.
 
         Returns:
             YasminNode: A reference to the YasminNode instance.
@@ -58,8 +66,12 @@ class YasminNode(Node):
             if not rclpy.ok():
                 rclpy.init()
 
+            instance = YasminNode._instance
+            if instance is not None and not instance.context.ok():
+                YasminNode._release_locked()
+
             if YasminNode._instance is None:
-                YasminNode._instance = YasminNode()
+                YasminNode(node_name)
 
             return YasminNode._instance
 
@@ -67,26 +79,33 @@ class YasminNode(Node):
     def destroy_instance() -> None:
         """
         Destroy the singleton instance if it exists.
+
+        Cleanup also runs after the context has been shut down.
         """
         with YasminNode._lock:
-            if YasminNode._instance is not None:
-                from yasmin_ros.ros_clients_cache import ROSClientsCache
+            YasminNode._release_locked()
 
-                ROSClientsCache.clear_for_node(YasminNode._instance)
-                if yasmin_ros.logger_node is YasminNode._instance:
-                    yasmin_ros.logger_node = None
-                if rclpy.ok():
-                    YasminNode._instance.shutdown()
-                YasminNode._instance = None
+    @staticmethod
+    def _release_locked() -> None:
+        instance = YasminNode._instance
+        if instance is None:
+            return
+        YasminNode._instance = None
 
-    def __init__(self) -> None:
+        from yasmin_ros.ros_clients_cache import ROSClientsCache
+
+        ROSClientsCache.clear_for_node(instance)
+        if yasmin_ros.logger_node is instance:
+            yasmin_ros.logger_node = None
+        instance.shutdown()
+
+    def __init__(self, node_name: Optional[str] = None) -> None:
         """
-        Default constructor. Initializes the node with a unique name.
+        Initializes the node and starts an Executor for its callbacks.
 
-        This constructor initializes the ROS 2 Node and
-        starts an Executor for handling node callbacks.
-        It raises a RuntimeError if an attempt is made to create a second instance
-        of this Singleton class.
+        Args:
+            node_name (str, optional): Node name. Defaults to a unique
+                random name.
 
         Raises:
             RuntimeError: Raised when an attempt is made to create
@@ -96,7 +115,9 @@ class YasminNode(Node):
             if YasminNode._instance is not None:
                 raise RuntimeError("This class is a Singleton")
 
-            super().__init__(f"yasmin_{str(uuid.uuid4()).replace('-', '')[:16]}_node")
+            if not node_name:
+                node_name = f"yasmin_{str(uuid.uuid4()).replace('-', '')[:16]}_node"
+            super().__init__(node_name)
 
             ## Executor for managing node operations.
             self._executor = Executor()
@@ -106,22 +127,27 @@ class YasminNode(Node):
             self._spin_thread: Thread = Thread(target=self._executor.spin, daemon=True)
             self._spin_thread.start()
 
+            self._destroyed = False
             YasminNode._instance = self
 
     def shutdown(self) -> None:
         """
         Stop the executor thread and destroy the node.
+
+        Safe to call more than once and after the context has been shut down.
         """
-        if self._executor is not None:
-            self._executor.remove_node(self)
-            self._executor.shutdown()
-            self._executor = None
+        executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.remove_node(self)
+            executor.shutdown()
 
-        if self._spin_thread is not None:
-            self._spin_thread.join()
-            self._spin_thread = None
+        spin_thread, self._spin_thread = self._spin_thread, None
+        if spin_thread is not None and spin_thread is not current_thread():
+            spin_thread.join()
 
-        self.destroy_node()
+        if not self._destroyed:
+            self._destroyed = True
+            self.destroy_node()
 
 
 atexit.register(YasminNode.destroy_instance)
