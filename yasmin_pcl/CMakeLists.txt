@@ -13,7 +13,10 @@ find_package(PCL REQUIRED COMPONENTS common io filters sample_consensus)
 find_package(pluginlib REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(yasmin REQUIRED)
+find_package(yasmin_ros REQUIRED)
 
 # pcl_conversions exports a proper CMake target on Kilted/Rolling,
 # but only old-style variables on Humble and older.
@@ -32,6 +35,8 @@ set(YASMIN_PCL_SOURCES
   src/io/save_pcd_state.cpp
   src/io/load_ply_state.cpp
   src/io/save_ply_state.cpp
+  src/io/point_cloud2_monitor_state.cpp
+  src/io/point_cloud2_publisher_state.cpp
   src/filters/pass_through_state.cpp
   src/filters/crop_box_state.cpp
   src/filters/voxel_grid_state.cpp
@@ -55,8 +60,11 @@ target_link_libraries(${PROJECT_NAME}_states
     ${PCL_LIBRARIES}
     ${PCL_CONVERSIONS_TARGETS}
     pluginlib::pluginlib
+    rclcpp::rclcpp
     ${sensor_msgs_TARGETS}
+    ${std_msgs_TARGETS}
     yasmin::yasmin
+    yasmin_ros::yasmin_ros
 )
 
 pluginlib_export_plugin_description_file(yasmin plugins.xml)
@@ -76,9 +84,12 @@ ament_export_targets(${PROJECT_NAME}Targets HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_dependencies(
   pluginlib
+  rclcpp
   sensor_msgs
+  std_msgs
   pcl_conversions
   yasmin
+  yasmin_ros
 )
 
 if(BUILD_TESTING)
@@ -99,8 +110,11 @@ if(BUILD_TESTING)
         ${PCL_LIBRARIES}
         ${PCL_CONVERSIONS_TARGETS}
         pluginlib::pluginlib
+        rclcpp::rclcpp
         ${sensor_msgs_TARGETS}
+        ${std_msgs_TARGETS}
         yasmin::yasmin
+        yasmin_ros::yasmin_ros
       )
     endif()
   endfunction()
@@ -121,6 +135,8 @@ if(BUILD_TESTING)
   add_yasmin_pcl_gtest(test_radius_outlier_removal_state test/test_radius_outlier_removal_state.cpp)
   add_yasmin_pcl_gtest(test_random_sample_state test/test_random_sample_state.cpp)
   add_yasmin_pcl_gtest(test_project_inliers_state test/test_project_inliers_state.cpp)
+  add_yasmin_pcl_gtest(test_point_cloud2_topic_states
+    test/test_point_cloud2_topic_states.cpp)
 endif()
 
 ament_package()

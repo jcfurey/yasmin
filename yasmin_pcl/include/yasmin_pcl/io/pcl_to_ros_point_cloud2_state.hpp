@@ -26,7 +26,13 @@ namespace yasmin_pcl::io {
  * @brief Converts pcl::PCLPointCloud2 into a ROS PointCloud2 message.
  *
  * The input PCL cloud is read from the blackboard key `input_cloud` and the
- * converted ROS message is written to `output_cloud`.
+ * converted ROS message is written to `output_cloud`, as a shared pointer or,
+ * with `output_format` set to `serialized`, as serialized bytes that Python
+ * reads with `rclpy.serialization.deserialize_message`.
+ *
+ * PCL headers keep only microseconds. When the optional `input_header` holds
+ * the original ROS header (see RosToPclPointCloud2State `output_header`) and
+ * the cloud still carries that frame and time, the exact stamp is restored.
  */
 class PclToRosPointCloud2State : public yasmin::State {
 public:
@@ -35,12 +41,19 @@ public:
   /** @brief Default destructor. */
   ~PclToRosPointCloud2State() override = default;
 
+  /** @brief Read the output format parameter. */
+  void configure() override;
+
   /**
    * @brief Convert a PCL point cloud to a ROS PointCloud2 message.
    * @param blackboard The shared blackboard.
    * @return Outcome string.
    */
   std::string execute(yasmin::Blackboard::SharedPtr blackboard) override;
+
+private:
+  /// @brief Whether to store serialized bytes instead of a shared pointer.
+  bool serialized_output_{false};
 };
 
 } // namespace yasmin_pcl::io

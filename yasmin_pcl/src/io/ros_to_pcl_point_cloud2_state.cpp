@@ -25,6 +25,7 @@
 #include "yasmin/logs.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
 #include "yasmin_pcl/common/cloud_validation.hpp"
+#include "yasmin_pcl/common/ros_cloud_bridge.hpp"
 
 namespace yasmin_pcl::io {
 
@@ -39,16 +40,23 @@ RosToPclPointCloud2State::RosToPclPointCloud2State()
                                 "The input cloud was missing or invalid.");
   this->add_input_key(
       "input_cloud",
-      "Input cloud stored as std::shared_ptr<sensor_msgs::msg::PointCloud2>.");
+      "Input cloud stored as std::shared_ptr<sensor_msgs::msg::PointCloud2>, "
+      "a PointCloud2 by value, or serialized PointCloud2 bytes (e.g. from "
+      "Python: rclpy.serialization.serialize_message(cloud)).");
   this->add_output_key("output_cloud",
                        "Converted cloud stored as pcl::PCLPointCloud2::Ptr.");
+  this->add_output_key(
+      "output_header",
+      "Exact ROS header of the input (std_msgs::msg::Header). PCL keeps only "
+      "microseconds; pass this to PclToRosPointCloud2State 'input_header' to "
+      "restore the acquisition time.");
 }
 
 std::string
 RosToPclPointCloud2State::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
     const auto input_cloud =
-        blackboard->get<common::RosPointCloud2Ptr>("input_cloud");
+        common::get_ros_cloud(*blackboard, "input_cloud");
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input ROS point cloud pointer is null");
@@ -59,6 +67,7 @@ RosToPclPointCloud2State::execute(yasmin::Blackboard::SharedPtr blackboard) {
     auto output_cloud = common::make_pcl_point_cloud2();
     pcl_conversions::toPCL(*input_cloud, *output_cloud);
     blackboard->set<common::PclPointCloud2Ptr>("output_cloud", output_cloud);
+    blackboard->set<std_msgs::msg::Header>("output_header", input_cloud->header);
 
     return "succeeded";
   } catch (const std::exception &e) {

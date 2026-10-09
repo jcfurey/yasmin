@@ -13,11 +13,14 @@
 // limitations under the License.
 
 #include <cstring>
+#include <stdexcept>
+#include <string>
 #include <gtest/gtest.h>
 
 #include "test_utils.hpp"
 #include "yasmin/blackboard.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
+#include "yasmin_pcl/common/ros_cloud_bridge.hpp"
 #include "yasmin_pcl/io/pcl_to_ros_point_cloud2_state.hpp"
 #include "yasmin_pcl/io/ros_to_pcl_point_cloud2_state.hpp"
 
@@ -119,4 +122,107 @@ TEST(RosToPclPointCloud2State, RoundTripPreservesFieldsPaddingAndFrame) {
   EXPECT_EQ(output->row_step, cloud->row_step);
   EXPECT_EQ(output->is_bigendian, cloud->is_bigendian);
   EXPECT_EQ(output->header, cloud->header);
+}
+
+namespace {
+
+std::size_t point_count(const yasmin_pcl::common::PclPointCloud2Ptr &cloud) {
+  return std::size_t(cloud->width) * cloud->height;
+}
+
+} // namespace
+
+TEST(RosToPclPointCloud2State, AcceptsSerializedAndByValueClouds) {
+  const auto cloud = yasmin_pcl::test::create_ros_cloud_ptr({{1, 2, 3}, {4, 5, 6}});
+  for (int representation = 0; representation < 2; ++representation) {
+    auto blackboard = yasmin::Blackboard::make_shared();
+    if (representation == 0) {
+      // How Python stores rclpy.serialization.serialize_message(cloud).
+      blackboard->set<yasmin_pcl::common::SerializedCloud>(
+          "input_cloud",
+          yasmin_ros::serialize_interface<sensor_msgs::msg::PointCloud2>(*cloud));
+    } else {
+      blackboard->set<sensor_msgs::msg::PointCloud2>("input_cloud", *cloud);
+    }
+    yasmin_pcl::io::RosToPclPointCloud2State state;
+    ASSERT_EQ(state(blackboard), "succeeded") << representation;
+    EXPECT_EQ(point_count(blackboard->get<yasmin_pcl::common::PclPointCloud2Ptr>(
+                  "output_cloud")),
+              2U);
+  }
+}
+
+TEST(RosToPclPointCloud2State, RejectsUnsupportedAndMalformedInputs) {
+  auto bytes = yasmin_ros::serialize_interface<sensor_msgs::msg::PointCloud2>(
+      *yasmin_pcl::test::create_ros_cloud_ptr({{1, 2, 3}}));
+  bytes.resize(bytes.size() / 2);
+  for (int mutation = 0; mutation < 2; ++mutation) {
+    auto blackboard = yasmin::Blackboard::make_shared();
+    if (mutation == 0) {
+      blackboard->set<std::string>("input_cloud", "not a cloud");
+    } else {
+      blackboard->set<yasmin_pcl::common::SerializedCloud>("input_cloud", bytes);
+    }
+    yasmin_pcl::io::RosToPclPointCloud2State state;
+    EXPECT_EQ(state(blackboard), "aborted") << mutation;
+    EXPECT_FALSE(blackboard->contains("output_cloud"));
+  }
+}
+
+TEST(PclToRosPointCloud2State, RestoresExactStampFromMatchingHeader) {
+  auto cloud = yasmin_pcl::test::create_ros_cloud_ptr({{1, 2, 3}});
+  cloud->header.frame_id = "lidar";
+  cloud->header.stamp.sec = 1;
+  cloud->header.stamp.nanosec = 123456789;
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::RosPointCloud2Ptr>("input_cloud", cloud);
+  yasmin_pcl::io::RosToPclPointCloud2State to_pcl;
+  ASSERT_EQ(to_pcl(blackboard), "succeeded");
+
+  // Pipeline wiring: PCL cloud and exact header feed the reverse conversion.
+  auto back = yasmin::Blackboard::make_shared();
+  back->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud",
+      blackboard->get<yasmin_pcl::common::PclPointCloud2Ptr>("output_cloud"));
+  yasmin_pcl::io::PclToRosPointCloud2State to_ros;
+  ASSERT_EQ(to_ros(back), "succeeded");
+  EXPECT_NE(back->get<yasmin_pcl::common::RosPointCloud2Ptr>("output_cloud")
+                ->header.stamp.nanosec,
+            123456789U);
+
+  back->set<std_msgs::msg::Header>(
+      "input_header", blackboard->get<std_msgs::msg::Header>("output_header"));
+  ASSERT_EQ(to_ros(back), "succeeded");
+  const auto restored =
+      back->get<yasmin_pcl::common::RosPointCloud2Ptr>("output_cloud");
+  EXPECT_EQ(restored->header.stamp.sec, 1);
+  EXPECT_EQ(restored->header.stamp.nanosec, 123456789U);
+  EXPECT_EQ(restored->header.frame_id, "lidar");
+
+  // A header that no longer describes the cloud is not applied.
+  auto other = blackboard->get<std_msgs::msg::Header>("output_header");
+  other.frame_id = "map";
+  back->set<std_msgs::msg::Header>("input_header", other);
+  ASSERT_EQ(to_ros(back), "succeeded");
+  EXPECT_NE(back->get<yasmin_pcl::common::RosPointCloud2Ptr>("output_cloud")
+                ->header.stamp.nanosec,
+            123456789U);
+}
+
+TEST(PclToRosPointCloud2State, SerializedOutputRoundTripsForPython) {
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}}));
+  yasmin_pcl::io::PclToRosPointCloud2State state;
+  state.set_parameter<std::string>("output_format", "serialized");
+  state.configure();
+  ASSERT_EQ(state(blackboard), "succeeded");
+
+  const auto cloud =
+      yasmin_ros::deserialize_interface<sensor_msgs::msg::PointCloud2>(
+          blackboard->get<yasmin_pcl::common::SerializedCloud>("output_cloud"));
+  EXPECT_EQ(cloud.width * cloud.height, 1U);
+
+  state.set_parameter<std::string>("output_format", "python");
+  EXPECT_THROW(state.configure(), std::invalid_argument);
 }

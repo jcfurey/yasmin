@@ -70,5 +70,15 @@
            base_class_type="yasmin::State">
       <description>Applies pcl::ProjectInliers to pcl::PCLPointCloud2.</description>
     </class>
+    <class name="yasmin_pcl/PointCloud2MonitorState"
+           type="yasmin_pcl::io::PointCloud2MonitorState"
+           base_class_type="yasmin::State">
+      <description>Receives sensor_msgs::msg::PointCloud2 natively into the blackboard.</description>
+    </class>
+    <class name="yasmin_pcl/PointCloud2PublisherState"
+           type="yasmin_pcl::io::PointCloud2PublisherState"
+           base_class_type="yasmin::State">
+      <description>Publishes a sensor_msgs::msg::PointCloud2 from the blackboard.</description>
+    </class>
   </library>
 </class_libraries>

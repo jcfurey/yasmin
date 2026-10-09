@@ -10,7 +10,10 @@
   <depend>pluginlib</depend>
   <depend>sensor_msgs</depend>
   <depend>pcl_conversions</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
   <depend>yasmin</depend>
+  <depend>yasmin_ros</depend>
   <build_depend>libpcl-all-dev</build_depend>
   <build_export_depend>libpcl-all-dev</build_export_depend>
   <exec_depend>libpcl-all-dev</exec_depend>
