@@ -14,26 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import argparse
+import json
+from pathlib import Path
 from typing import List
 
-import rclpy
-from rclpy.node import Node
+from rclpy.logging import get_logger
 from rclpy.utilities import remove_ros_args
 
 from .plugin_manager import PluginManager
 
-
-class DiscoveryNode(Node):
-    """ROS node used to print discovered plugins."""
-
-    def __init__(self) -> None:
-        """Create the discovery node."""
-        super().__init__("yasmin_plugins_discovery")
+LOGGER_NAME = "yasmin_plugins_discovery"
 
 
-def parse_args():
+def parse_args(args=None):
     """Parse command line arguments for plugin discovery."""
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument(
@@ -48,11 +42,27 @@ def parse_args():
         help="Invalidate cache after this age in seconds. 0 disables age-based invalidation.",
     )
     parser.add_argument(
+        "--package-timeout-sec",
+        type=float,
+        default=None,
+        help=(
+            "Time one package may take to load before it is skipped. Defaults to "
+            "$YASMIN_DISCOVERY_PACKAGE_TIMEOUT or 10 seconds."
+        ),
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Cache directory. Defaults to $YASMIN_CACHE or the user cache directory.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Print full plugin metadata.",
+        help="Print full plugin metadata and every discovery failure.",
     )
-    return parser.parse_args(remove_ros_args()[1:])
+    argv = remove_ros_args()[1:] if args is None else args
+    return parser.parse_args(argv)
 
 
 def _format_plugin_header(plugin) -> str:
@@ -80,48 +90,62 @@ def _format_plugin_details(plugin) -> List[str]:
         f"  outcome_descriptions: {json.dumps(plugin.outcome_descriptions, ensure_ascii=False)}",
         f"  input_keys: {json.dumps(plugin.input_keys, ensure_ascii=False)}",
         f"  output_keys: {json.dumps(plugin.output_keys, ensure_ascii=False)}",
+        f"  parameters: {json.dumps(plugin.parameters, ensure_ascii=False)}",
     ]
     return details
 
 
-def _log_plugins(node: Node, title: str, plugins: list, verbose: bool) -> None:
+def _log_plugins(logger, title: str, plugins: list, verbose: bool) -> None:
     """Log a group of plugins."""
-    node.get_logger().info(f"{title}: {len(plugins)}")
+    logger.info(f"{title}: {len(plugins)}")
 
     for plugin in plugins:
-        node.get_logger().info(_format_plugin_header(plugin))
+        logger.info(_format_plugin_header(plugin))
 
         if not verbose:
             continue
 
         for line in _format_plugin_details(plugin):
-            node.get_logger().info(line)
+            logger.info(line)
+
+
+def _log_failures(logger, failures: list, verbose: bool) -> None:
+    """Log discovery failures; YASMIN-related ones always, all with --verbose."""
+    relevant = [failure for failure in failures if failure.get("relevant")]
+    logger.info(
+        f"Discovery failures: {len(failures)} ({len(relevant)} YASMIN-related"
+        + ("" if verbose else "; use --verbose to list all")
+        + ")"
+    )
+
+    for failure in failures if verbose else relevant:
+        message = PluginManager.format_failure(failure)
+        if failure.get("relevant"):
+            logger.warning(message)
+        else:
+            logger.info(message)
 
 
 def main() -> int:
     """Run plugin discovery and print the discovered plugins."""
     args = parse_args()
+    logger = get_logger(LOGGER_NAME)
 
-    started_rclpy = False
-    if not rclpy.ok():
-        rclpy.init()
-        started_rclpy = True
+    # Discovery itself never initializes ROS in this process: plugin code runs in
+    # a separate worker process.
+    manager = PluginManager(
+        cache_dir=args.cache_dir,
+        max_cache_age_sec=args.max_cache_age_sec,
+        package_timeout_sec=args.package_timeout_sec,
+    )
+    manager.load_all_plugins(
+        force_refresh=args.force_refresh,
+    )
 
-    node = DiscoveryNode()
-
-    try:
-        manager = PluginManager(max_cache_age_sec=args.max_cache_age_sec)
-        manager.load_all_plugins(
-            force_refresh=args.force_refresh,
-        )
-
-        _log_plugins(node, "C++ plugins", manager.cpp_plugins, args.verbose)
-        _log_plugins(node, "Python plugins", manager.python_plugins, args.verbose)
-        _log_plugins(node, "XML state machines", manager.xml_files, args.verbose)
-    finally:
-        node.destroy_node()
-        if started_rclpy and rclpy.ok():
-            rclpy.shutdown()
+    _log_plugins(logger, "C++ plugins", manager.cpp_plugins, args.verbose)
+    _log_plugins(logger, "Python plugins", manager.python_plugins, args.verbose)
+    _log_plugins(logger, "XML state machines", manager.xml_files, args.verbose)
+    _log_failures(logger, manager.failures, args.verbose)
 
     return 0
 
