@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+
 #include <memory>
 #include <set>
 #include <string>
@@ -321,6 +323,37 @@ TEST_F(TestState, TestSetParameterOverridesStoredValue) {
 
   EXPECT_TRUE(s.has_parameter("count"));
   EXPECT_EQ(s.get_parameter<int>("count"), 5);
+}
+
+TEST_F(TestState, TestNumericParametersConvertFromXmlAndPythonTypes) {
+  FooState s;
+  // XML stores double and int; Python stores double and int64.
+  s.set_parameter<double>("leaf", 0.25);
+  s.set_parameter<std::int64_t>("count", 8);
+  s.set_parameter<int>("small", 3);
+
+  EXPECT_FLOAT_EQ(s.get_parameter<float>("leaf"), 0.25F);
+  EXPECT_EQ(s.get_parameter<int>("count"), 8);
+  EXPECT_EQ(s.get_parameter<unsigned int>("count"), 8u);
+  EXPECT_DOUBLE_EQ(s.get_parameter<double>("small"), 3.0);
+  EXPECT_EQ(s.get_parameter<std::int64_t>("small"), 3);
+}
+
+TEST_F(TestState, TestNumericParameterConversionRejectsLossyValues) {
+  FooState s;
+  s.set_parameter<double>("fraction", 0.5);
+  s.set_parameter<std::int64_t>("large", std::int64_t(1) << 40);
+  s.set_parameter<int>("negative", -1);
+  s.set_parameter<bool>("flag", true);
+  s.set_parameter<std::string>("text", "1");
+
+  EXPECT_THROW(s.get_parameter<int>("fraction"), std::invalid_argument);
+  EXPECT_THROW(s.get_parameter<int>("large"), std::out_of_range);
+  EXPECT_THROW(s.get_parameter<unsigned int>("negative"), std::out_of_range);
+  // bool and non-numeric types stay exact.
+  EXPECT_THROW(s.get_parameter<int>("flag"), std::runtime_error);
+  EXPECT_THROW(s.get_parameter<bool>("negative"), std::runtime_error);
+  EXPECT_THROW(s.get_parameter<int>("text"), std::runtime_error);
 }
 
 TEST_F(TestState, TestMetadataIncludesParameters) {

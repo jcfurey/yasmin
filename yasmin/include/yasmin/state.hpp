@@ -16,11 +16,15 @@
 #define YASMIN__STATE_HPP_
 
 #include <atomic>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #include "yasmin/blackboard.hpp"
 #include "yasmin/blackboard_key_info.hpp"
+#include "yasmin/demangle.hpp"
 #include "yasmin/logs.hpp"
 
 namespace yasmin {
@@ -35,6 +39,77 @@ enum class StateStatus {
   CANCELED, ///< State execution has been canceled
   COMPLETED ///< State execution has completed successfully
 };
+
+namespace detail {
+
+template <typename T, typename S> bool integer_in_range(S value) {
+  if constexpr (std::is_signed_v<S> == std::is_signed_v<T>) {
+    return value >= std::numeric_limits<T>::min() &&
+           value <= std::numeric_limits<T>::max();
+  } else if constexpr (std::is_signed_v<S>) {
+    return value >= 0 && static_cast<std::make_unsigned_t<S>>(value) <=
+                             std::numeric_limits<T>::max();
+  } else {
+    return value <= static_cast<std::make_unsigned_t<T>>(
+                        std::numeric_limits<T>::max());
+  }
+}
+
+template <typename T, typename S>
+bool try_convert_parameter(const Blackboard &parameters,
+                           const std::string &name, const std::string &type,
+                           T &result) {
+  if (type != demangle_type(typeid(S).name())) {
+    return false;
+  }
+  const S value = parameters.get<S>(name);
+  if constexpr (std::is_integral_v<T>) {
+    if constexpr (std::is_floating_point_v<S>) {
+      throw std::invalid_argument("Parameter '" + name +
+                                  "' must be an integer, got '" + type + "'");
+    } else if (!integer_in_range<T>(value)) {
+      throw std::out_of_range("Parameter '" + name +
+                              "' is out of range for '" +
+                              demangle_type(typeid(T).name()) + "'");
+    }
+  }
+  result = static_cast<T>(value);
+  return true;
+}
+
+/**
+ * @brief Read a numeric parameter stored as any numeric type.
+ *
+ * XML parameters are stored as int or double and Python parameters as
+ * int64 or double, so a state declaring float or int would otherwise reject
+ * them. Integers convert when in range; floating-point values do not convert
+ * to integers.
+ */
+template <typename T>
+T get_numeric_parameter(const Blackboard &parameters, const std::string &name) {
+  const std::string type = parameters.get_type(name);
+  T result{};
+  const bool converted =
+      try_convert_parameter<T, T>(parameters, name, type, result) ||
+      try_convert_parameter<T, int>(parameters, name, type, result) ||
+      try_convert_parameter<T, long>(parameters, name, type, result) ||
+      try_convert_parameter<T, long long>(parameters, name, type, result) ||
+      try_convert_parameter<T, unsigned int>(parameters, name, type, result) ||
+      try_convert_parameter<T, unsigned long>(parameters, name, type, result) ||
+      try_convert_parameter<T, unsigned long long>(parameters, name, type,
+                                                   result) ||
+      try_convert_parameter<T, short>(parameters, name, type, result) ||
+      try_convert_parameter<T, unsigned short>(parameters, name, type,
+                                               result) ||
+      try_convert_parameter<T, double>(parameters, name, type, result) ||
+      try_convert_parameter<T, float>(parameters, name, type, result);
+  if (!converted) {
+    return parameters.get<T>(name); // throws the descriptive type error
+  }
+  return result;
+}
+
+} // namespace detail
 
 /**
  * @class State
@@ -324,13 +399,24 @@ public:
 
   /**
    * @brief Gets a parameter from the state-local parameter storage.
+   *
+   * Numeric parameters (except bool) convert from any stored numeric type
+   * when representable, since XML and Python store int/int64 and double.
+   *
    * @tparam T The parameter type.
    * @param parameter_name The parameter name.
    * @return The stored parameter value.
+   * @throws std::invalid_argument if a floating-point value is requested as
+   * an integer, std::out_of_range if an integer does not fit.
    */
   template <typename T>
   T get_parameter(const std::string &parameter_name) const {
-    return this->get_parameters_blackboard()->get<T>(parameter_name);
+    if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool>) {
+      return detail::get_numeric_parameter<T>(
+          *this->get_parameters_blackboard(), parameter_name);
+    } else {
+      return this->get_parameters_blackboard()->get<T>(parameter_name);
+    }
   }
 
   /**
