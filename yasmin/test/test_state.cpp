@@ -54,6 +54,48 @@ protected:
 
 TEST_F(TestState, TestCall) { EXPECT_EQ((*state)(blackboard), "outcome1"); }
 
+class ThrowOnceState : public State {
+public:
+  ThrowOnceState() : State({"done"}) {}
+  bool should_throw = true;
+  bool cancel_before_throw = false;
+  std::string execute(Blackboard::SharedPtr) override {
+    if (should_throw) {
+      should_throw = false;
+      if (cancel_before_throw) {
+        cancel_state();
+      }
+      throw std::runtime_error("execution failed");
+    }
+    return "done";
+  }
+};
+
+TEST_F(TestState, ExceptionRestoresIdleAndAllowsReuse) {
+  ThrowOnceState throwing;
+  EXPECT_THROW(throwing(blackboard), std::runtime_error);
+  EXPECT_FALSE(throwing.is_running());
+  EXPECT_TRUE(throwing.is_idle());
+  EXPECT_FALSE(throwing.is_completed());
+  EXPECT_FALSE(throwing.is_canceled());
+  EXPECT_EQ(throwing(blackboard), "done");
+  EXPECT_TRUE(throwing.is_completed());
+}
+
+TEST_F(TestState, ExceptionPreservesCancellation) {
+  ThrowOnceState throwing;
+  throwing.cancel_before_throw = true;
+  EXPECT_THROW(throwing(blackboard), std::runtime_error);
+  EXPECT_TRUE(throwing.is_canceled());
+  EXPECT_EQ(throwing(blackboard), "done");
+  EXPECT_TRUE(throwing.is_completed());
+}
+
+TEST_F(TestState, NullBlackboardDoesNotLeaveStateRunning) {
+  EXPECT_THROW((*state)(nullptr), std::invalid_argument);
+  EXPECT_FALSE(state->is_running());
+}
+
 TEST_F(TestState, TestCancel) {
   EXPECT_FALSE(state->is_canceled());
   state->cancel_state();

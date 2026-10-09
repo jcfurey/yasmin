@@ -44,7 +44,7 @@ std::mutex sigint_registry_mutex;
 std::unordered_map<int, std::function<void()>> sigint_callbacks;
 int next_sigint_id = 0;
 bool sigint_handler_installed = false;
-struct sigaction previous_sigint_action {};
+struct sigaction previous_sigint_action{};
 
 extern "C" void sigint_handler(int) {
   std::lock_guard<std::mutex> lock(sigint_registry_mutex);
@@ -57,7 +57,7 @@ extern "C" void sigint_handler(int) {
 int register_sigint_callback(std::function<void()> cb) {
   std::lock_guard<std::mutex> lock(sigint_registry_mutex);
   if (!sigint_handler_installed) {
-    struct sigaction sigint_action {};
+    struct sigaction sigint_action{};
     sigint_action.sa_handler = sigint_handler;
     sigemptyset(&sigint_action.sa_mask);
     sigint_action.sa_flags = 0;
@@ -497,7 +497,7 @@ std::string StateMachine::execute(Blackboard::SharedPtr blackboard) {
   YASMIN_LOG_INFO("Executing state machine with initial state '%s'",
                   this->start_state.c_str());
 
-  this->cancel_state_machine_requested.store(false);
+  this->cancel_state_machine_requested.store(this->is_canceled());
   this->execution_active.store(true);
   this->set_current_state(this->start_state);
 
@@ -566,18 +566,19 @@ void StateMachine::cancel_state() {
 
 void StateMachine::cancel_state_machine() {
 
-  if (this->is_running()) {
-    YASMIN_LOG_INFO("Canceling state machine '%s'", this->to_string().c_str());
-
-    this->cancel_state_machine_requested.store(true);
+  if (this->is_running() || this->execution_active.load()) {
+    if (!this->cancel_state_machine_requested.exchange(true)) {
+      YASMIN_LOG_INFO("Canceling state machine '%s'",
+                      this->to_string().c_str());
+    }
     this->current_state_cond.notify_all();
 
     const auto current_state = this->wait_for_current_state();
 
     if (!current_state.empty()) {
       const auto &state = this->states.at(current_state);
-      if (auto child_state_machine =
-              std::dynamic_pointer_cast<StateMachine>(state)) {
+      if (auto *child_state_machine =
+              dynamic_cast<StateMachine *>(state->get_inner_state())) {
         child_state_machine->cancel_state_machine();
       } else {
         state->cancel_state();

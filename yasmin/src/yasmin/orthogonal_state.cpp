@@ -18,8 +18,10 @@
 #include <exception>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 #include "yasmin/logs.hpp"
+#include "yasmin/parallel_execution.hpp"
 #include "yasmin/state_utils.hpp"
 
 namespace yasmin {
@@ -48,6 +50,10 @@ void OrthogonalState::add_region(const std::string &name,
   for (const auto &r : this->regions_) {
     if (r.name == name) {
       throw std::invalid_argument("Region '" + name + "' already exists");
+    }
+    if (r.sm == sm) {
+      throw std::invalid_argument(
+          "Regions cannot share a state machine instance");
     }
   }
   this->regions_.push_back({name, std::move(sm)});
@@ -81,10 +87,16 @@ void OrthogonalState::configure() {
   std::unordered_map<std::string, std::vector<JoinState *>> join_groups;
 
   for (auto &region : this->regions_) {
+    std::unordered_set<std::string> region_sync_ids;
     for (const auto &[state_name, state] : region.sm->get_states()) {
       (void)state_name;
       JoinState *js = dynamic_cast<JoinState *>(state->get_inner_state());
       if (js) {
+        if (!region_sync_ids.insert(js->get_sync_id()).second) {
+          throw std::invalid_argument("Region '" + region.name +
+                                      "' contains multiple JoinStates for '" +
+                                      js->get_sync_id() + "'");
+        }
         join_groups[js->get_sync_id()].push_back(js);
       }
     }
@@ -129,9 +141,7 @@ std::string OrthogonalState::execute(Blackboard::SharedPtr blackboard) {
     return this->default_outcome_;
   }
 
-  std::vector<std::thread> threads;
   std::vector<std::string> region_outcomes(this->regions_.size());
-  std::vector<std::exception_ptr> exceptions(this->regions_.size(), nullptr);
 
   // Snapshot hooks under lock for thread-safe access during concurrent
   // execution
@@ -148,64 +158,39 @@ std::string OrthogonalState::execute(Blackboard::SharedPtr blackboard) {
     (*before_hook)();
   }
 
-  // Fork: launch all regions
-  threads.reserve(this->regions_.size());
   try {
-    for (size_t i = 0; i < this->regions_.size(); i++) {
-      auto bb_copy = std::make_shared<Blackboard>(*blackboard);
-      threads.push_back(
-          std::thread([this, i, bb_copy, &region_outcomes, &exceptions]() {
-            try {
-              region_outcomes[i] = this->regions_[i].sm->execute(bb_copy);
-            } catch (...) {
-              exceptions[i] = std::current_exception();
-            }
-          }));
+    detail::run_parallel(
+        this->regions_.size(),
+        [this, &blackboard, &region_outcomes](std::size_t i) {
+          auto bb_copy = std::make_shared<Blackboard>(*blackboard);
+          region_outcomes[i] = (*this->regions_[i].sm)(bb_copy);
+        },
+        [this]() {
+          for (auto &[id, barrier] : this->barriers_) {
+            (void)id;
+            barrier->cancel();
+          }
+          for (auto &region : this->regions_) {
+            region.sm->cancel_state_machine();
+          }
+        },
+        [this]() { return this->is_canceled(); });
+  } catch (const StateMachineCancelException &) {
+    if (after_hook) {
+      (*after_hook)();
     }
-
+    if (this->is_canceled()) {
+      return this->default_outcome_;
+    }
+    throw;
   } catch (...) {
-    for (auto &[sync_id, barrier] : this->barriers_) {
-      (void)sync_id;
-      barrier->cancel();
-    }
-    for (auto &thread : threads) {
-      if (thread.joinable()) {
-        thread.join();
-      }
-    }
     if (after_hook) {
       (*after_hook)();
     }
     throw;
   }
-
-  // Join: wait for all regions to finish
-  for (auto &t : threads) {
-    if (t.joinable()) {
-      t.join();
-    }
-  }
-
-  // Invoke after-join hook (e.g., GIL re-acquire when Python states are used)
   if (after_hook) {
     (*after_hook)();
-  }
-
-  // Check for exceptions
-  for (size_t i = 0; i < exceptions.size(); i++) {
-    if (exceptions[i]) {
-      try {
-        std::rethrow_exception(exceptions[i]);
-      } catch (const std::exception &e) {
-        YASMIN_LOG_ERROR("Region '%s' threw: %s",
-                         this->regions_[i].name.c_str(), e.what());
-        throw;
-      } catch (...) {
-        YASMIN_LOG_ERROR("Region '%s' threw unknown exception",
-                         this->regions_[i].name.c_str());
-        throw;
-      }
-    }
   }
 
   // Handle cancel
@@ -218,10 +203,14 @@ std::string OrthogonalState::execute(Blackboard::SharedPtr blackboard) {
 }
 
 void OrthogonalState::cancel_state() {
+  State::cancel_state();
   // Unblock all barriers first
-  for (auto &[id, barrier] : this->barriers_) {
-    (void)id;
-    barrier->cancel();
+  // configure() publishes the barrier map only when it is complete.
+  if (this->configured_.load()) {
+    for (auto &[id, barrier] : this->barriers_) {
+      (void)id;
+      barrier->cancel();
+    }
   }
   // Cancel each region's state machine
   for (auto &region : this->regions_) {
@@ -229,7 +218,6 @@ void OrthogonalState::cancel_state() {
       region.sm->cancel_state_machine();
     }
   }
-  State::cancel_state();
 }
 
 std::string OrthogonalState::evaluate_outcomes(

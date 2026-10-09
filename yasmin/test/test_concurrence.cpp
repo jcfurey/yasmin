@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 
+#include "test_parallel_utils.hpp"
 #include "yasmin/blackboard.hpp"
 #include "yasmin/concurrence.hpp"
 #include "yasmin/state.hpp"
@@ -29,6 +30,24 @@
 #include "yasmin/types.hpp"
 
 using namespace yasmin;
+
+TEST(ParallelFailure, CancelsConcurrentSiblingAndPreservesException) {
+  auto waiter = std::make_shared<CancellationWaitState>();
+  auto failure = std::make_shared<ParallelFailureState>(waiter);
+  Concurrence concurrent({{"waiter", waiter}, {"failure", failure}}, "done",
+                         {});
+  const auto start = std::chrono::steady_clock::now();
+  try {
+    concurrent(Blackboard::make_shared());
+    FAIL() << "Expected worker exception";
+  } catch (const std::runtime_error &error) {
+    EXPECT_STREQ(error.what(), "original worker failure");
+  }
+  EXPECT_TRUE(waiter->is_canceled());
+  EXPECT_FALSE(waiter->timed_out.load());
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
+  EXPECT_FALSE(concurrent.is_running());
+}
 
 class FooState : public State {
 public:

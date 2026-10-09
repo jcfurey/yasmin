@@ -25,6 +25,7 @@
 
 #include "yasmin/logs.hpp"
 #include "yasmin/orthogonal_state.hpp"
+#include "yasmin/parallel_execution.hpp"
 #include "yasmin/state.hpp"
 #include "yasmin/state_machine.hpp"
 #include "yasmin/state_utils.hpp"
@@ -140,7 +141,6 @@ void Concurrence::configure() {
 
 std::string Concurrence::execute(Blackboard::SharedPtr blackboard) {
   this->configure();
-  std::vector<std::thread> state_threads;
 
   // Reset stored intermediate outcomes before starting a new execution.
   {
@@ -152,10 +152,6 @@ std::string Concurrence::execute(Blackboard::SharedPtr blackboard) {
     }
   }
 
-  // Capture exceptions from child threads (same pattern as OrthogonalState)
-  std::vector<std::exception_ptr> exceptions(this->states.size(), nullptr);
-  size_t thread_idx = 0;
-
   // Snapshot hooks under lock for thread-safe access during concurrent
   // execution
   std::shared_ptr<GilHook> before_hook;
@@ -166,71 +162,52 @@ std::string Concurrence::execute(Blackboard::SharedPtr blackboard) {
     after_hook = after_join_hook_;
   }
 
+  std::vector<std::pair<std::string, State::SharedPtr>> children(
+      this->states.begin(), this->states.end());
+
   // Invoke before-fork hook (e.g., GIL release when Python states are used)
   if (before_hook) {
     (*before_hook)();
   }
 
-  // Initialize the parallel execution of all the states.
-  // Each branch receives a blackboard copy that shares the underlying storage
-  // but keeps an isolated remapping scope.
-  state_threads.reserve(this->states.size());
-
   try {
-    for (const auto &[state_name, state] : this->states) {
-      Blackboard::SharedPtr thread_blackboard =
-          std::make_shared<Blackboard>(*blackboard);
-      size_t idx = thread_idx++;
-      state_threads.push_back(std::thread(
-          [this, state_name, state, thread_blackboard, &exceptions, idx]() {
-            try {
-              std::string outcome = (*state.get())(thread_blackboard);
-              const std::lock_guard<std::mutex> lock(
-                  this->intermediate_outcome_mutex);
-              this->intermediate_outcome_map[state_name] = outcome;
-            } catch (...) {
-              exceptions[idx] = std::current_exception();
+    detail::run_parallel(
+        children.size(),
+        [this, &children, &blackboard](std::size_t i) {
+          auto bb_copy = std::make_shared<Blackboard>(*blackboard);
+          const auto &[name, state] = children[i];
+          const auto outcome = (*state)(bb_copy);
+          std::lock_guard<std::mutex> lock(this->intermediate_outcome_mutex);
+          this->intermediate_outcome_map[name] = outcome;
+        },
+        [this]() {
+          for (const auto &[name, state] : this->states) {
+            (void)name;
+            if (auto *sm =
+                    dynamic_cast<StateMachine *>(state->get_inner_state())) {
+              sm->cancel_state_machine();
+            } else if (state->is_running()) {
+              state->cancel_state();
             }
-          }));
+          }
+        },
+        [this]() { return this->is_canceled(); });
+  } catch (const StateMachineCancelException &) {
+    if (after_hook) {
+      (*after_hook)();
     }
-
+    if (this->is_canceled()) {
+      return this->default_outcome;
+    }
+    throw;
   } catch (...) {
-    for (std::thread &state_thread : state_threads) {
-      if (state_thread.joinable()) {
-        state_thread.join();
-      }
-    }
     if (after_hook) {
       (*after_hook)();
     }
     throw;
   }
-
-  // Wait for states to finish
-  for (std::thread &state_thread : state_threads) {
-    if (state_thread.joinable()) {
-      state_thread.join();
-    }
-  }
-
-  // Invoke after-join hook (e.g., GIL re-acquire when Python states are used)
   if (after_hook) {
     (*after_hook)();
-  }
-
-  // Check for exceptions from child threads
-  for (size_t i = 0; i < exceptions.size(); i++) {
-    if (exceptions[i]) {
-      try {
-        std::rethrow_exception(exceptions[i]);
-      } catch (const std::exception &e) {
-        YASMIN_LOG_ERROR("Concurrence child state threw: %s", e.what());
-        throw;
-      } catch (...) {
-        YASMIN_LOG_ERROR("Concurrence child state threw unknown exception");
-        throw;
-      }
-    }
   }
 
   // Handle a cancel
@@ -256,10 +233,10 @@ std::string Concurrence::execute(Blackboard::SharedPtr blackboard) {
 }
 
 void Concurrence::cancel_state() {
+  yasmin::State::cancel_state();
   for (const auto &[state_name, state] : this->states) {
     state->cancel_state();
   }
-  yasmin::State::cancel_state();
 }
 
 const StateMap &Concurrence::get_states() const noexcept {

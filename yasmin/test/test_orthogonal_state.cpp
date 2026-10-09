@@ -15,10 +15,12 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
 
+#include "test_parallel_utils.hpp"
 #include "yasmin/blackboard.hpp"
 #include "yasmin/join_state.hpp"
 #include "yasmin/orthogonal_state.hpp"
@@ -193,6 +195,73 @@ TEST_F(TestOrthogonalState, TestBasicConcurrentRegions) {
 
   ort->configure();
   EXPECT_EQ((*ort)(blackboard), "timeout");
+}
+
+TEST_F(TestOrthogonalState, CancelReachesRunningRegion) {
+  auto waiter = std::make_shared<CancellationWaitState>();
+  auto region = make_region("A", waiter);
+  OrthogonalState ort("done");
+  ort.add_region("A", region);
+  auto result = std::async(std::launch::async, [&] { return ort(blackboard); });
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!waiter->entered.load() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(region->is_running());
+  ort.cancel_state();
+  EXPECT_EQ(result.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_EQ(result.get(), "done");
+  EXPECT_TRUE(waiter->is_canceled());
+  EXPECT_FALSE(waiter->timed_out.load());
+  waiter->finish_normally.store(true);
+  EXPECT_EQ(ort(blackboard), "done");
+  EXPECT_TRUE(region->is_completed());
+  EXPECT_FALSE(waiter->is_canceled());
+}
+
+TEST_F(TestOrthogonalState, FailureReleasesSiblingBarrier) {
+  OrthogonalState ort("done");
+  auto failing =
+      make_synced_region("A", "sync", std::make_shared<TestStateA>());
+  failing->add_state("fail", std::make_shared<ParallelFailureState>(),
+                     {{"done", "work"}});
+  failing->set_start_state("fail");
+  ort.add_region("A", failing);
+  ort.add_region(
+      "B", make_synced_region("B", "sync", std::make_shared<TestStateA>()));
+  auto result = std::async(std::launch::async, [&] { return ort(blackboard); });
+  const auto ready = result.wait_for(std::chrono::seconds(1));
+  if (ready != std::future_status::ready) {
+    ort.cancel_state(); // Permit a failing regression to clean up its worker.
+  }
+  EXPECT_EQ(ready, std::future_status::ready);
+  try {
+    result.get();
+    FAIL() << "Expected original worker exception";
+  } catch (const std::runtime_error &error) {
+    EXPECT_STREQ(error.what(), "original worker failure");
+  }
+}
+
+TEST_F(TestOrthogonalState, RejectsDuplicateRegionInstance) {
+  OrthogonalState ort("done");
+  auto region = make_region("A", std::make_shared<TestStateA>());
+  ort.add_region("A", region);
+  EXPECT_THROW(ort.add_region("B", region), std::invalid_argument);
+}
+
+TEST_F(TestOrthogonalState, RejectsMultipleParticipantsFromOneRegion) {
+  OrthogonalState ort("done");
+  auto region = std::make_shared<StateMachine>(Outcomes{"done"});
+  region->add_state("first", std::make_shared<JoinState>("sync"),
+                    {{"joined", "second"}});
+  region->add_state("second", std::make_shared<JoinState>("sync"),
+                    {{"joined", "done"}});
+  ort.add_region("A", region);
+  EXPECT_THROW(ort.configure(), std::invalid_argument);
 }
 
 TEST_F(TestOrthogonalState, TestOutcomeMap) {

@@ -100,53 +100,60 @@ std::string State::operator()(Blackboard::SharedPtr blackboard) {
   YASMIN_LOG_DEBUG("Executing state '%s'", this->to_string().c_str());
   this->set_status(StateStatus::RUNNING);
 
-  // Inject default values for input keys that are missing from the blackboard
-  const auto &input_keys = this->get_metadata_ref().input_keys;
-  for (const auto &key_info : input_keys) {
-    if (key_info.has_default && !blackboard->contains(key_info.name)) {
-      YASMIN_LOG_DEBUG(
-          "Injecting default value for input key '%s' in state '%s'",
-          key_info.name.c_str(), this->to_string().c_str());
-      key_info.inject_default(*blackboard, key_info.name);
-    }
-  }
-
-  // Execute the specific logic of the state
-  std::string outcome = this->execute(blackboard);
-
-  // Check if the outcome is valid
-  const auto &outcomes = this->get_outcomes();
-  if (outcomes.find(outcome) == outcomes.end()) {
-
-    // Mark as idle before throwing exception
-    this->set_status(StateStatus::IDLE);
-
-    if (outcome.empty()) {
-      throw std::logic_error("State '" + this->to_string() +
-                             "' returned an empty outcome. "
-                             "Did you forget to override execute()?");
+  try {
+    if (!blackboard) {
+      throw std::invalid_argument("State blackboard cannot be null");
     }
 
-    // Construct a string representation of the possible outcomes
-    std::string outcomes_string =
-        "[" +
-        yasmin::join(outcomes, ", ", [](const std::string &o) { return o; }) +
-        "]";
+    // Inject default values for input keys that are missing from the blackboard
+    const auto &input_keys = this->get_metadata_ref().input_keys;
+    for (const auto &key_info : input_keys) {
+      if (key_info.has_default && !blackboard->contains(key_info.name)) {
+        YASMIN_LOG_DEBUG(
+            "Injecting default value for input key '%s' in state '%s'",
+            key_info.name.c_str(), this->to_string().c_str());
+        key_info.inject_default(*blackboard, key_info.name);
+      }
+    }
 
-    // Throw an exception if the outcome is not valid
-    throw std::logic_error("Outcome '" + outcome +
-                           "' does not belong to the outcomes of "
-                           "the state '" +
-                           this->to_string() +
-                           "'. The possible outcomes are: " + outcomes_string);
+    // Execute the specific logic of the state
+    std::string outcome = this->execute(blackboard);
+
+    // Check if the outcome is valid
+    const auto &outcomes = this->get_outcomes();
+    if (outcomes.find(outcome) == outcomes.end()) {
+
+      if (outcome.empty()) {
+        throw std::logic_error("State '" + this->to_string() +
+                               "' returned an empty outcome. "
+                               "Did you forget to override execute()?");
+      }
+
+      // Construct a string representation of the possible outcomes
+      std::string outcomes_string =
+          "[" +
+          yasmin::join(outcomes, ", ", [](const std::string &o) { return o; }) +
+          "]";
+
+      // Throw an exception if the outcome is not valid
+      throw std::logic_error(
+          "Outcome '" + outcome +
+          "' does not belong to the outcomes of "
+          "the state '" +
+          this->to_string() +
+          "'. The possible outcomes are: " + outcomes_string);
+    }
+
+    // Mark as completed if not canceled
+    auto expected = StateStatus::RUNNING;
+    this->status.compare_exchange_strong(expected, StateStatus::COMPLETED);
+
+    return outcome; // Return the valid outcome
+  } catch (...) {
+    auto expected = StateStatus::RUNNING;
+    this->status.compare_exchange_strong(expected, StateStatus::IDLE);
+    throw;
   }
-
-  // Mark as completed if not canceled
-  if (!this->is_canceled()) {
-    this->set_status(StateStatus::COMPLETED);
-  }
-
-  return outcome; // Return the valid outcome
 }
 
 Outcomes const &State::get_outcomes() const noexcept { return this->outcomes; }
