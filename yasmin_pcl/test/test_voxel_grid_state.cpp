@@ -22,6 +22,8 @@
 #include <algorithm>
 #include <vector>
 
+#include <pcl/pcl_config.h>
+
 #include "test_utils.hpp"
 #include "yasmin/blackboard.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
@@ -139,9 +141,12 @@ TEST(VoxelGridState, RejectsLeafTooSmallForCloudExtent) {
   EXPECT_EQ(state(blackboard), "aborted");
   EXPECT_FALSE(blackboard->contains("output_cloud"));
 
-  // The same leaf is valid over a selected subset with a small extent.
+#if PCL_VERSION_COMPARE(>=, 1, 15, 0)
+  // PCL 1.15 bounds the selected points, so the same leaf is valid over a
+  // subset with a small extent. Older releases bound the whole cloud.
   blackboard->set<yasmin_pcl::common::Indices>("input_indices", {0});
   EXPECT_EQ(state(blackboard), "succeeded");
+#endif
 }
 
 TEST(VoxelGridState, AcceptsXmlAndPythonParameterTypes) {

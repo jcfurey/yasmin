@@ -15,6 +15,7 @@
 #include "yasmin_pcl/filters/voxel_grid_state.hpp"
 
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/pcl_config.h>
 
 #include <cmath>
 #include <cstdint>
@@ -32,34 +33,48 @@
 namespace yasmin_pcl::filters {
 namespace {
 
+// Bounds as VoxelGrid computes them: PCL 1.15 bounds the selected points;
+// older releases bound the whole cloud and lack the indices overloads.
+void voxel_grid_bounds(const common::PclPointCloud2Ptr &cloud,
+                       const pcl::IndicesPtr &indices, int x, int y, int z,
+                       const std::string &field_name, float limit_min,
+                       float limit_max, bool limit_negative,
+                       Eigen::Vector4f &min_p, Eigen::Vector4f &max_p) {
+#if PCL_VERSION_COMPARE(>=, 1, 15, 0)
+  if (indices && field_name.empty()) {
+    pcl::getMinMax3D(cloud, *indices, x, y, z, min_p, max_p);
+    return;
+  }
+  if (indices) {
+    pcl::getMinMax3D(cloud, *indices, x, y, z, field_name, limit_min, limit_max,
+                     min_p, max_p, limit_negative);
+    return;
+  }
+#else
+  (void)indices;
+#endif
+  if (field_name.empty()) {
+    pcl::getMinMax3D(cloud, x, y, z, min_p, max_p);
+  } else {
+    pcl::getMinMax3D(cloud, x, y, z, field_name, limit_min, limit_max, min_p,
+                     max_p, limit_negative);
+  }
+}
+
 // VoxelGrid only logs a warning and returns its input unfiltered when voxel
-// indices would overflow, so mirror its check (bounds over the selected
-// points, float inverse leaf size) and fail instead.
+// indices would overflow, so mirror its check (same bounds, float inverse
+// leaf size) and fail instead.
 void require_voxel_index_range(const common::PclPointCloud2Ptr &cloud,
                                const pcl::IndicesPtr &indices,
                                const Eigen::Array3f &leaf,
-                               const std::string &field_name,
-                               double limit_min, double limit_max,
-                               bool limit_negative) {
-  const int x = pcl::getFieldIndex(*cloud, "x");
-  const int y = pcl::getFieldIndex(*cloud, "y");
-  const int z = pcl::getFieldIndex(*cloud, "z");
+                               const std::string &field_name, double limit_min,
+                               double limit_max, bool limit_negative) {
   Eigen::Vector4f min_p, max_p;
-  if (field_name.empty() && indices) {
-    pcl::getMinMax3D(cloud, *indices, x, y, z, min_p, max_p);
-  } else if (field_name.empty()) {
-    pcl::getMinMax3D(cloud, x, y, z, min_p, max_p);
-  } else if (indices) {
-    pcl::getMinMax3D(cloud, *indices, x, y, z, field_name,
-                     static_cast<float>(limit_min),
-                     static_cast<float>(limit_max), min_p, max_p,
-                     limit_negative);
-  } else {
-    pcl::getMinMax3D(cloud, x, y, z, field_name,
-                     static_cast<float>(limit_min),
-                     static_cast<float>(limit_max), min_p, max_p,
-                     limit_negative);
-  }
+  voxel_grid_bounds(
+      cloud, indices, pcl::getFieldIndex(*cloud, "x"),
+      pcl::getFieldIndex(*cloud, "y"), pcl::getFieldIndex(*cloud, "z"),
+      field_name, static_cast<float>(limit_min), static_cast<float>(limit_max),
+      limit_negative, min_p, max_p);
   double voxels = 1.0;
   for (int i = 0; i < 3; ++i) {
     if (!(min_p[i] <= max_p[i])) {
