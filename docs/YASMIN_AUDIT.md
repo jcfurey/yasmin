@@ -221,6 +221,107 @@ Kilted and Rolling have not been built.
 
 Verification: `yasmin_ros` 141 records and `yasmin_factory` 56 records passed on Lyrical (one skip by design). `yasmin_ros` also passed rebuilt in the Jazzy and Humble images. Both formatters pass repository-wide.
 
+## Implementation progress — mixed-language processes (2026-10-09)
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| N12 | Fixed | **P2, reproduced.** Mixed-language processes had inconsistent nodes. **Python process with C++ states:** a `__node` remap gave the rclpy and rclcpp nodes the same name (`/robot1/fsm` twice). **C++ factory with Python states:** the embedded interpreter has an empty `sys.argv`, so the Python node ignored `--ros-args` and ran in the root namespace while the factory ran in `/robot1`, putting Python states on different topics. Python auto-initialization now falls back to the process arguments, matching the C++ change in S02. The singleton of the non-host language is configured as a companion: `yasmin_pybind_bridge` sets it in Python processes, and the C++ factory sets it when it creates the interpreter. A companion takes the process `--ros-args` except a node-name remap and is named after that remap with `_cpp`/`_py`. Covered by C++ and Python unit tests, and by a factory test that launches both factory executables and checks the ROS graph. |
+| N13 | Fixed | **P3, reproduced.** Correction to S02: three of the four factory executables called `set_ros_loggers()` before naming the singleton, so they still had random names. They now create the named node first. The graph test above also covers this. |
+
+## Implementation progress — CLI, editor and plugin manager (2026-10-09)
+
+The original audit did not cover `yasmin_cli`, `yasmin_editor` or `yasmin_plugins_manager`. A follow-up review reproduced the findings below; unless noted, each regression test was also run against the previous code, where it fails. Two decisions shape this batch:
+
+- **Plugin discovery** still scans every package, but imports and constructs plugin code in a separate worker process (M01).
+- **Includes:** a relative `file_path` include may leave the including file's folder. The C++ factory already allowed this; the Python factory now does too, so `validate`, `run` and `run --py` agree.
+
+### Core changes found through these packages
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| N14 | Fixed | **P2, reproduced.** SIGTERM (systemd, `docker stop`, `timeout`) did not cancel the Python factory node: rclpy does not handle SIGTERM, and a Python handler cannot run while the main thread is blocked in C++. The async-signal-safe dispatcher (L04) now handles SIGTERM like SIGINT: the first signal cancels, a second goes to the previous handler. Covered by the C++ test `SigtermCancelsAndEscalatesLikeSigint` and by CLI end-to-end tests for both factories. |
+| N15 | Fixed | **P1, reproduced.** The Python bindings of `cancel_state` and `cancel_state_machine` held the GIL while waiting for the machine to report its current state, so a cancel from a second Python thread stopped every Python thread, including the one running the state. This is the core half of E07. The bindings now release the GIL; the regression hangs on the previous bindings and passes in 0.5 s. |
+
+### `yasmin_cli`
+
+The package had no tests: `colcon test` collected nothing and reported success. It now has unit tests and end-to-end tests that run both factory nodes.
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| C01 | Fixed | **P1.** `run --input`/`--param` writes a modified copy to a temp folder, where relative `file_path` includes no longer resolved. Includes are rewritten to absolute paths against the original file's folder before the copy is written. |
+| C02 | Fixed | **P1.** `run`, `edit`, `viewer`, `validate` and `test` started nodes through `ros2 run`. Ctrl-C left the node running orphaned, a SIGINT to the CLI alone (as launch sends it) never reached the node, and SIGTERM killed the CLI and left both children and the temp folder behind. The CLI now starts the executable directly in its own process group, forwards SIGINT, SIGTERM and SIGHUP, waits for it, and maps a signal death to 128+N. Tested: SIGINT and SIGTERM end `run` with 130 in about 1 s with no surviving process, for both factories. |
+| C03 | Fixed | **P2.** ROS arguments (namespace, node name, remaps, `use_sim_time`, log level) could not be passed. `run --ros-args ...` appends them after the CLI's own parameters, which also enables companion naming (N12). |
+| C04 | Fixed | **P2.** The XML path was passed to rcl unquoted, and rcl parses parameter values as YAML: ` #` truncated the path and `: ` failed to parse. Values are now JSON-quoted. |
+| C05 | Fixed | **P2.** `validate` used the Python factory while `run` defaults to C++, and they disagreed: Python rejected `../` includes, and integers above 2^31 passed `validate` but aborted the C++ node with `std::out_of_range`. `validate` now loads the file in the same factory node as `run` (new node parameters `validate_only` and `strict_validation`; `--py` selects Python). The C++ factory reports out-of-range or malformed numbers as a load error. The factories still differ on integers above the C++ `int` range, but each `validate` now agrees with its `run`. |
+| C06 | Fixed | **P2.** `print --validate-only` judged files with the editor's checks, which rejected 10 of the factory's 11 test files. It now validates with the factory; plain `print` shows the editor's findings as warnings on stderr. The editor checks were corrected as well (E10). |
+| C07 | Fixed | **P2.** `print` silently left out `OrthogonalState`, `Region` and `JoinState`. They are now rendered, with outcome maps. |
+| C08 | Fixed | **P2.** `--input` accepted only keys with an explicit `in`/`in/out` type and a default type, so required inputs and untyped keys (which the factory treats as `in`) were rejected. A missing `type` now means `in` and a missing `default_type` means `str`; completion follows the same rules. |
+| C09 | Fixed | **P2.** Both factory nodes logged a failed or canceled machine and exited 0. They now exit 0 when the machine ends with an outcome, 1 when it cannot be loaded or raises, and 130 when canceled, and they cancel the machine from a context pre-shutdown callback. |
+| C10 | Fixed | **P3.** XML plugin ids ignored subfolders, so two `main.xml` files in one package got the same id. The id is now `package/relative_path`. |
+| C11 | Fixed | **P3.** Errors went to stdout, an unreadable file crashed `run` with a traceback, and `test`/`info` replaced the real import error with "Plugin not found". Errors now go to stderr, `OSError` is reported, and load errors are shown. |
+| C12 | Fixed | **P3.** XML path completion only listed files below the current folder. Prefixes containing `/` (`./`, `../`, absolute paths) and folders now complete. |
+
+### `yasmin_editor`
+
+New round-trip tests load every factory example XML with the real `YasminFactory`, save it through the editor, load the result again and compare the full state trees.
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| E01 | Fixed | **P1, data loss.** `file_path` includes and `<State>` elements without `type` were lost on save. Includes are read and written with `file_path`/`file_name`/`package`; an untyped `<State>` is read as `py`, as both factories do. |
+| E02 | Fixed | **P1, data loss.** Adding, deleting or editing any state wiped container keys and parameters that no child used. Keys loaded from XML or edited by the user are now always kept (their usage is widened, never narrowed); only keys the editor derived itself are dropped when unused. Parameter overwrites remove only declarations that child released. |
+| E03 | Fixed | **P1, data loss.** Default values were lost or corrupted: a type without a value was kept, aliases such as `double` were rejected, and `str()` turned `0`/`False` into `""` and list/dict defaults into Python reprs the factory cannot parse. Parsing and formatting now follow `yasmin_factory.type_utils`. |
+| E04 | Fixed | **P1.** Deleting a container's final outcome or renaming a JoinState outcome left stale transitions in the parent, producing files the factory cannot load. Both now update the parent, and validation reports transitions from unknown outcomes and outcomes with two transitions. |
+| E05 | Fixed | **P1, data loss.** Keys on regions and leaf states were dropped, legacy `<Default>` and Concurrence `<Outcome to=...>` became nameless states. They are now read (legacy syntax converted to `<Key>`/`<OutcomeMap>`) and written; unknown elements are skipped with a warning. |
+| E06 | Fixed | **P1, hang.** Play or Step after a breakpoint deadlocked the GUI: the resume path emitted a signal while holding a lock its slot takes. Signals are now emitted after the lock is released. |
+| E07 | Fixed | **P1, hang.** "Cancel State" while paused hung the GUI. While paused no state is executing, so the action is disabled; otherwise cancel requests run on a helper thread. The GIL release (N15) removes the remaining stall. |
+| E08 | Fixed | **P2.** Two outcomes of one child could be mapped to the same container outcome, but a YASMIN outcome map keeps one outcome per child. Such rules are rejected while editing and reported by validation. |
+| E09 | Fixed | **P2.** Paste and "Extract selection" pointed transitions at the wrong outcome after renaming. Pasted transitions now follow renamed outcomes. |
+| E10 | Fixed | **P2.** Validation blocked saving valid machines (no `start_state`, an unnamed root). These are no longer errors; warnings are shown, and every message includes the state path. |
+| E11 | Fixed | **P2.** Validation accepted machines the factory rejects. Now reported as errors: unreachable states, undeclared `ParamRemap` source or target, defaults that do not parse for their type, whitespace in outcome names, `Remap` on Concurrence children and remaps on regions, `file_name` includes without a package, and unknown state types. |
+| E12 | Fixed | **P2.** Save could write characters XML 1.0 cannot encode, replaced symlinks (such as `--symlink-install` files) with copies and reset the file mode. Invalid characters are stripped, symlinks are written through and the mode is kept. |
+| E13 | Fixed | **P2.** Closing the window during a run never canceled it, and "Cancel State Machine" did nothing while paused. Closing now cancels and joins the run, and canceling releases a paused worker. |
+| E14 | Fixed | **P2.** Showing the interactive shell's variables ran every debugger command, because their `repr` executed them. `repr` is now side-effect free, and a bare command name typed in the console is rewritten to a call. |
+| E15 | Fixed | **P2.** The runtime log grew without limit and a looping machine slowed the GUI from 0.8 s to 2.7 s per event-loop pass. The buffer and view keep 5000 lines, and log lines are appended in batches; a pass now stays at 7–10 ms with flat memory. |
+| E16 | Fixed | **P3.** A run that raised showed a blank outcome and "Ready". It now ends with "Failed". |
+
+The runtime snapshot that the editor runs now rewrites relative includes to absolute paths, because it is written to the temp folder. The GUI tests also failed under ament before this change, which runs each test folder separately and never loaded the `qapp` fixture for `test/gui`; the fixture now lives in that folder.
+
+### `yasmin_plugins_manager`
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| M01 | Fixed | **P1, hang.** Discovery imported and constructed plugins in the editor or CLI process, so one plugin that blocked, crashed, wrote to stdout or called `rclpy.init()` affected the caller. Discovery now runs in a worker process with a per-package timeout (`YASMIN_DISCOVERY_PACKAGE_TIMEOUT` or `--package-timeout-sec`, default 10 s). On a timeout or crash the worker's process group is killed, the package is recorded as failed, and a new worker continues. The worker's nodes stay off the ROS graph, and `discover_plugins` no longer creates a node. |
+| M02 | Fixed | **P1.** A `SystemExit` in any imported module silently ended discovery. Module `__main__` files are skipped and every import is guarded. |
+| M03 | Fixed | **P1.** Any path containing the text `/test` was skipped, so every plugin in a workspace such as `~/test_ws` was missed. Only folders named `test` or `tests` inside a package are skipped now. |
+| M04 | Fixed | **P1.** One unreadable or non-UTF-8 file aborted discovery for every package. Each file and package is now guarded, and broken plugin descriptions are reported. |
+| M05 | Fixed | **P2.** The cache missed new XML files in subfolders, rebuilt plugin libraries and fixed packages. It now tracks every XML file under each share folder, the plugin library as pluginlib resolves it (including a missing one), the pluginlib index and Python package folders. |
+| M06 | Fixed | **P2.** XML state-machine keys differed from what the factory builds (case, `<Default>` keys, output defaults, repeated parameters). They now match; one test compares against `YasminFactory` output. |
+| M07 | Fixed | **P3.** Concurrent writers exposed partial cache files, and one cache served every environment. Writes are atomic, and each environment (`AMENT_PREFIX_PATH`, `PYTHONPATH`, distribution, Python version) has its own `plugins_cache_<hash>.json` under `$YASMIN_CACHE`, `$XDG_CACHE_HOME/yasmin_plugins_manager` or `~/.cache/yasmin_plugins_manager`. |
+| M08 | Fixed | **P3.** Valid JSON of an unexpected shape crashed the cache reader. It now triggers a rescan. |
+| M09 | Fixed | **P3.** A single-file module was scanned as if its folder (often `site-packages`) were the package. Only the module is scanned and tracked. |
+| M10 | Fixed | **P3.** Failed imports were invisible. `PluginManager.failures` lists them; YASMIN-related failures are logged as warnings, and `discover_plugins --verbose` lists all. |
+| M11 | Fixed | **P3.** Python and C++ outcome order changed between runs. Outcomes are sorted; XML outcomes keep their declared order. |
+| M12 | Fixed | **P3.** All 19 C++ plugins (and Python plugins) had no package name, `--verbose` omitted parameters, list and dict defaults became `""`, and XML ids ignored subfolders. All fixed. |
+
+### Verification
+
+All ten packages were built and tested on the host and in the Docker images, which now include `yasmin_cli`, `yasmin_editor` and `yasmin_plugins_manager`. The editor GUI tests run with `QT_QPA_PLATFORM=offscreen`.
+
+| Distribution | Build | `colcon test-result` |
+| --- | --- | --- |
+| Lyrical (host) | OK, no warnings | 815 records, 0 errors/failures, 2 skipped by design |
+| Jazzy (Docker) | OK, no warnings | 815 records, 0 errors/failures, 3 skipped |
+| Humble (Docker) | OK, no warnings | 815 records, 0 errors/failures, 2 skipped |
+
+The two by-design skips are the `yasmin_ros` gtests that only do work in a re-executed child process. Humble's gtest reports them as passed. The extra Docker skip is the unreadable-file discovery test, which cannot work as root. On Humble the TF clock test is skipped as before. clang-format 18.1.8, black (line length 90) and `git diff --check` pass repository-wide.
+
+### Remaining limitations
+
+- The editor drops unknown XML elements and comments (with a warning), and never removes keys loaded from XML; there is no UI to delete a key.
+- The editor reports `Remap` on Concurrence children during validation but still lets you edit it.
+- One discovery worker serves many packages, so side effects that a plugin leaves in it persist until the worker restarts after a timeout or crash. A package that failed stays missing until one of its tracked files changes or `--force-refresh` is used.
+- A cold plugin-cache rebuild through `ros2 yasmin list` still prints a `leaked semaphore` warning, as it did before this batch.
+
 ## Findings inventory
 
 | ID | Priority | Area | Finding | Evidence |
@@ -260,6 +361,50 @@ Verification: `yasmin_ros` 141 records and `yasmin_factory` 56 records passed on
 | N09 | P2 | State parameters | C++ plugins reject numeric parameters from XML and Python | Reproduced (follow-up review) |
 | N10 | P2 | Action goal acceptance | No bound on goal acceptance without also capping goal duration | Integration gap (follow-up review) |
 | N11 | P3 | Python action | Goal built before waiting for the server | Source-confirmed (follow-up review) |
+| N12 | P2 | Mixed-language processes | Duplicate node names; Python states ignore the factory's namespace | Reproduced (follow-up review) |
+| N13 | P3 | Factory executables | Node named after logger setup already created it | Reproduced (follow-up review) |
+| N14 | P2 | Signal handling | SIGTERM does not cancel the Python factory node | Reproduced (follow-up review) |
+| N15 | P1 | Python bindings | Cancel calls hold the GIL while waiting for the current state | Reproduced (follow-up review) |
+| C01 | P1 | CLI `run` | `--input`/`--param` break relative includes | Reproduced (CLI review) |
+| C02 | P1 | CLI processes | Signals orphan the node or never reach it | Reproduced (CLI review) |
+| C03 | P2 | CLI `run` | No way to pass `--ros-args` | Reproduced (CLI review) |
+| C04 | P2 | CLI `run` | Unquoted path is parsed as YAML | Reproduced (CLI review) |
+| C05 | P2 | CLI `validate` | Validates with a different factory than `run` uses | Reproduced (CLI review) |
+| C06 | P2 | CLI `print` | Editor checks reject valid files | Reproduced (CLI review) |
+| C07 | P2 | CLI `print` | Orthogonal states, regions and join states are omitted | Reproduced (CLI review) |
+| C08 | P2 | CLI `run` | Required and untyped input keys are rejected | Reproduced (CLI review) |
+| C09 | P2 | Factory nodes | Failed and canceled machines exit 0 | Reproduced (CLI review) |
+| C10 | P3 | CLI plugin ids | XML ids ignore subfolders | Reproduced (CLI review) |
+| C11 | P3 | CLI errors | Errors on stdout, tracebacks, hidden load errors | Reproduced (CLI review) |
+| C12 | P3 | CLI completion | Paths outside the current folder do not complete | Reproduced (CLI review) |
+| E01 | P1 | Editor XML | Includes and untyped states lost on save | Reproduced (editor review) |
+| E02 | P1 | Editor keys | Editing any state wipes unused container keys and parameters | Reproduced (editor review) |
+| E03 | P1 | Editor defaults | Default values lost or corrupted | Reproduced (editor review) |
+| E04 | P1 | Editor transitions | Stale parent transitions after outcome changes | Reproduced (editor review) |
+| E05 | P1 | Editor XML | Region and leaf keys dropped; legacy elements become nameless states | Reproduced (editor review) |
+| E06 | P1 | Editor runtime | Play or Step after a breakpoint deadlocks | Reproduced (editor review) |
+| E07 | P1 | Editor runtime | Cancel State while paused hangs | Reproduced (editor review) |
+| E08 | P2 | Editor outcome maps | Two outcomes of one child mapped to one outcome | Reproduced (editor review) |
+| E09 | P2 | Editor clipboard | Paste and extract use the wrong outcome | Reproduced (editor review) |
+| E10 | P2 | Editor validation | Valid machines rejected | Reproduced (editor review) |
+| E11 | P2 | Editor validation | Machines the factory rejects accepted | Reproduced (editor review) |
+| E12 | P2 | Editor save | Unencodable characters, replaced symlinks, reset file mode | Reproduced (editor review) |
+| E13 | P2 | Editor runtime | Close and cancel while paused do not cancel | Reproduced (editor review) |
+| E14 | P2 | Editor shell | Showing variables runs debugger commands | Reproduced (editor review) |
+| E15 | P2 | Editor runtime log | Unbounded log slows the GUI | Reproduced (editor review) |
+| E16 | P3 | Editor runtime | Failed run shows a blank outcome | Reproduced (editor review) |
+| M01 | P1 | Plugin discovery | Plugin code runs in the caller's process and can hang it | Reproduced (plugin manager review) |
+| M02 | P1 | Plugin discovery | `SystemExit` silently ends discovery | Reproduced (plugin manager review) |
+| M03 | P1 | Plugin discovery | Paths containing `/test` are skipped | Reproduced (plugin manager review) |
+| M04 | P1 | Plugin discovery | One bad file aborts discovery | Reproduced (plugin manager review) |
+| M05 | P2 | Plugin cache | Common changes do not invalidate the cache | Reproduced (plugin manager review) |
+| M06 | P2 | Plugin metadata | XML keys differ from the factory | Reproduced (plugin manager review) |
+| M07 | P3 | Plugin cache | Concurrent writers; one cache for all environments | Reproduced (plugin manager review) |
+| M08 | P3 | Plugin cache | Unexpected JSON shape crashes the reader | Reproduced (plugin manager review) |
+| M09 | P3 | Plugin discovery | Single-file module scanned as a package | Reproduced (plugin manager review) |
+| M10 | P3 | Plugin discovery | Failed imports are invisible | Reproduced (plugin manager review) |
+| M11 | P3 | Plugin metadata | Outcome order is nondeterministic | Reproduced (plugin manager review) |
+| M12 | P3 | Plugin metadata | Missing package names, parameters and defaults | Reproduced (plugin manager review) |
 
 ### L01 — Unchecked C++ blackboard casts
 

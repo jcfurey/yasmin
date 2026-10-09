@@ -4499,7 +4499,7 @@ int main(int argc, char *argv[]) {
 
 ## ROS 2 and Nav2 Integration
 
-**Nodes.** ROS states, `TfBufferState` and `YasminViewerPub` accept an application-owned node; otherwise they share the `YasminNode` singleton, which spins its own executor thread. The singleton gets a unique random name unless the application names it first with `YasminNode::get_instance("my_fsm")` (C++, optionally with `rclcpp::NodeOptions`, including a custom context) or `YasminNode.get_instance("my_fsm")` (Python). A `__node` remapping on the command line takes precedence. When the C++ singleton initializes rclcpp itself, it uses the process arguments, as `rclpy.init()` does. `yasmin_factory_node` and `yasmin_factory_action_server` use their executable names, so parameter files can be keyed by node name. If the default context is shut down, the next `get_instance()` replaces the stale node.
+**Nodes.** ROS states, `TfBufferState` and `YasminViewerPub` accept an application-owned node; otherwise they share the `YasminNode` singleton, which spins its own executor thread. The singleton gets a unique random name unless the application names it first with `YasminNode::get_instance("my_fsm")` (C++, optionally with `rclcpp::NodeOptions`, including a custom context) or `YasminNode.get_instance("my_fsm")` (Python). A `__node` remapping on the command line takes precedence. When either singleton initializes its client library itself, it uses the process arguments, also inside an embedded interpreter. In a process that mixes languages (C++ plugin states in Python, or Python states in the C++ factory), the other language's singleton is a companion: it takes the same `--ros-args` except a `__node` remap and is named after that remap with a `_cpp` or `_py` suffix, so both nodes share the namespace and parameters but not the name. The factory executables use their executable names, so parameter files can be keyed by node name (`/**` keys also reach companions). If the default context is shut down, the next `get_instance()` replaces the stale node.
 
 **Names and namespaces.** Use relative topic, service and action names (`navigate_to_pose`, not `/navigate_to_pose`) so a namespaced robot (`--ros-args -r __ns:=/robot1`) talks to its own Nav2 stack. The viewer topic is the relative `fsm_viewer`: run `yasmin_viewer_node` in the same namespace, or remap it. Machines with the same name from different publishers are listed separately (`NAME`, `NAME (2)`).
 
@@ -4513,7 +4513,7 @@ int main(int argc, char *argv[]) {
 
 **Goal acceptance.** `response_timeout` bounds acceptance and result together, which would also cap how long a navigation may run. To bound only the wait for the server to accept or reject a goal, like the server timeout of Nav2's behavior tree action nodes, pass `goal_response_timeout` (Python, seconds) or call `set_goal_response_timeout()` (C++, e.g. `std::chrono::milliseconds(500)`) before adding the state to a state machine. On expiry the state returns `timeout`, and a goal accepted later is canceled.
 
-**Ctrl-C.** With `handle_sigint=True`, the first SIGINT cancels the running state machine while the ROS context stays valid, so active goals can still be canceled on their servers. The cancellation runs on a dispatcher thread, not in the signal handler. A second SIGINT before the state machine finishes is forwarded to the previously installed handler (rclcpp/rclpy shutdown, or the default action).
+**Ctrl-C.** With `handle_sigint=True`, the first SIGINT or SIGTERM cancels the running state machine while the ROS context stays valid, so active goals can still be canceled on their servers. The cancellation runs on a dispatcher thread, not in the signal handler. A second signal before the state machine finishes is forwarded to the previously installed handler (rclcpp/rclpy shutdown, or the default action). The factory nodes also cancel their state machine when the ROS context shuts down.
 
 ## YASMIN Editor
 
@@ -4526,6 +4526,8 @@ The **YASMIN Editor** is a graphical user interface application for building YAS
 - Visualize state machine structure
 
 State machines can be exported and saved in XML format for reuse and sharing.
+
+Saving checks the state machine against the rules the YASMIN factories enforce. Errors, such as an unreachable state, a transition from an outcome the state does not have, or a default value that does not parse as its type, must be confirmed before the file is written; warnings are shown after saving. Relative `file_path` includes are kept as written and resolved from the edited file's folder, also when the state machine is run from the editor.
 
 ![YASMIN Editor Interface](./docs/editor.png)
 
@@ -4608,7 +4610,8 @@ ros2 yasmin info <plugin_id>
 # Print the structure of an XML state machine
 ros2 yasmin print /path/to/state_machine.xml
 
-# Validate a specific XML state machine
+# Validate a specific XML state machine (with the C++ factory, as `run` uses;
+# add --py to check with the Python factory, as `run --py` uses)
 ros2 yasmin validate /path/to/state_machine.xml
 
 # Validate all XML state machines from installed packages
@@ -4619,6 +4622,9 @@ ros2 yasmin run /path/to/state_machine.xml
 
 # Run with input key and parameter overrides
 ros2 yasmin run /path/to/state_machine.xml --input key1=value1 --param param1=value2
+
+# Pass ROS arguments to the factory node (namespace, node name, parameters)
+ros2 yasmin run /path/to/state_machine.xml --ros-args -r __ns:=/robot1 -r __node:=mission
 
 # Test a single state plugin in isolation
 ros2 yasmin test <plugin_id>
@@ -4632,6 +4638,8 @@ ros2 yasmin edit /path/to/state_machine.xml
 ros2 yasmin viewer
 ros2 yasmin viewer --host 0.0.0.0 --port 8080
 ```
+
+`run` exits with 0 when the state machine ends with any outcome, 1 when it cannot be loaded or fails with an error, and 130 when it is canceled. Ctrl-C, SIGINT and SIGTERM (as sent by launch, systemd or `docker stop`) cancel the state machine and stop the node; a second signal is forwarded to ROS. `print` reports the editor's checks as warnings; `print --validate-only` and `validate` decide validity by loading the file with the factory. The factory nodes accept `validate_only:=true` (and `strict_validation:=false`) to load and validate a state machine without running it.
 
 ## YASMIN Factory
 
@@ -4720,7 +4728,7 @@ sm.add_state("PUBLISH", cpp("yasmin_pcl/PointCloud2PublisherState", topic="point
              remappings={"input_cloud": "ros_out"})
 ```
 
-C++ states in a Python process use the C++ `YasminNode`. It initializes rclcpp with the process arguments, so `--ros-args` namespaces, remappings and parameters apply to it as to rclpy. A `__node` remap therefore names both nodes.
+C++ states in a Python process use the C++ `YasminNode`, a companion that takes the process `--ros-args` (namespace, remappings, parameters) and, with `-r __node:=fsm`, the name `fsm_cpp`.
 
 When a Python state must handle the cloud itself, cross the boundary explicitly:
 
@@ -4745,7 +4753,9 @@ Force a full rescan (ignore cache):
 ros2 run yasmin_plugins_manager discover_plugins --force-refresh
 ```
 
-Discovery results are cached in `~/.cache/yasmin_plugins_manager/plugins_cache.json` (override with the `YASMIN_CACHE` env var). The cache is invalidated automatically on ROS environment changes, file modifications, or package list changes.
+Python modules and C++ plugins are loaded in a separate worker process, so plugin code cannot block, crash, or start ROS nodes in the calling tool. A package that takes longer than 10 s (`YASMIN_DISCOVERY_PACKAGE_TIMEOUT` or `--package-timeout-sec`) or crashes the worker is skipped and reported; discovery continues with the next package. `discover_plugins` prints discovery failures in YASMIN-related packages, and all of them with `--verbose`.
+
+Discovery results are cached per environment in `plugins_cache_<hash>.json` under `$YASMIN_CACHE`, `$XDG_CACHE_HOME/yasmin_plugins_manager`, or `~/.cache/yasmin_plugins_manager` (first one set). The cache is invalidated automatically when the ROS environment, the package list, a package's share files (including XML state machines in subfolders), a plugin library, or a Python package changes.
 
 ### Ignoring Packages and Files
 
