@@ -187,6 +187,31 @@ Verification: all five packages rebuilt in Debug mode with `BUILD_TESTING=ON` on
 
 The N08, P02, P03 save and S04 regressions were also run against the previous implementation, where they fail. The XML and Python parameter probes for `VoxelGridState` and `StatisticalOutlierRemovalState` failed before N09 and pass after it. `git diff --check` passed. Older ROS distributions advertised by CI have not been built.
 
+## Verification — CI checks and other distributions (2026-10-09)
+
+GitHub Actions has not run on the fork, so none of the upstream CI checks had verified this branch. They were reproduced locally with the same tools.
+
+| Check | Result before | Fix |
+| --- | --- | --- |
+| clang-format 18.1.8 (`cpp-formatter.yml`) | 17 changed C++ files failed; `main` passes | Formatted; the whole repository now passes |
+| black, line length 90 (`python-formatter.yml`) | 4 changed Python files failed | Formatted; the whole repository now passes |
+| Jazzy (`ros:jazzy`, PCL 1.14) build | `yasmin_pcl` failed to compile | See below |
+| Humble (`ros:humble`, PCL 1.12) build | `yasmin_pcl` failed to compile | See below |
+
+**Compile failure.** The VoxelGrid overflow pre-check (P02) used `getMinMax3D` overloads with indices, which first appear in PCL 1.15. Older PCL also computes the VoxelGrid bounds over the whole cloud, so the pre-check now follows the installed version.
+
+**Humble TF clock.** On Humble, the Python tf2 `Buffer` has no clock or time-jump handling; passing the node only adds the `tf2_frames` service. The R09 change is harmless there, and the clock assertion is skipped on that version.
+
+The Docker builds mirror `rosdep install` plus `colcon build/test`. They cover `yasmin`, `yasmin_msgs`, `yasmin_ros`, `yasmin_viewer`, `yasmin_factory` and `yasmin_pcl`; `yasmin_editor` was not changed and is not included.
+
+| Distribution | Build | `colcon test-result` |
+| --- | --- | --- |
+| Lyrical (host, PCL 1.15) | OK, no warnings | 540 records, 0 errors/failures, 1 skipped by design |
+| Jazzy (Docker) | OK | 540 records, 0 errors/failures, 1 skipped by design |
+| Humble (Docker) | OK | 540 records, 0 errors/failures, after the TF skip above |
+
+Kilted and Rolling have not been built.
+
 ## Findings inventory
 
 | ID | Priority | Area | Finding | Evidence |
