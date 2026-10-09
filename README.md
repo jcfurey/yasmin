@@ -4215,6 +4215,8 @@ The following types are guaranteed to work between Python and C++:
 
 ROS messages cannot be directly stored in the blackboard when
 communicating between Python and C++ states. Instead, they should be **serialized into raw bytes**.
+For point clouds, prefer keeping the pipeline in C++ states; see
+[Point cloud pipelines: C++ or Python](#point-cloud-pipelines-c-or-python).
 
 #### Option A — Serialization States
 
@@ -4496,9 +4498,11 @@ int main(int argc, char *argv[]) {
 
 ## ROS 2 and Nav2 Integration
 
-**Nodes.** ROS states, `TfBufferState` and `YasminViewerPub` accept an application-owned node; otherwise they share the `YasminNode` singleton, which spins its own executor thread. The singleton gets a unique random name unless the application names it first with `YasminNode::get_instance("my_fsm")` (C++, optionally with `rclcpp::NodeOptions`) or `YasminNode.get_instance("my_fsm")` (Python). A `__node` remapping on the command line takes precedence. `yasmin_factory_node` and `yasmin_factory_action_server` use their executable names, so parameter files can be keyed by node name. If the default context is shut down, the next `get_instance()` replaces the stale node.
+**Nodes.** ROS states, `TfBufferState` and `YasminViewerPub` accept an application-owned node; otherwise they share the `YasminNode` singleton, which spins its own executor thread. The singleton gets a unique random name unless the application names it first with `YasminNode::get_instance("my_fsm")` (C++, optionally with `rclcpp::NodeOptions`, including a custom context) or `YasminNode.get_instance("my_fsm")` (Python). A `__node` remapping on the command line takes precedence. When the C++ singleton initializes rclcpp itself, it uses the process arguments, as `rclpy.init()` does. `yasmin_factory_node` and `yasmin_factory_action_server` use their executable names, so parameter files can be keyed by node name. If the default context is shut down, the next `get_instance()` replaces the stale node.
 
-**Names and namespaces.** Use relative topic, service and action names (`navigate_to_pose`, not `/navigate_to_pose`) so a namespaced robot (`--ros-args -r __ns:=/robot1`) talks to its own Nav2 stack. The viewer topic is the relative `fsm_viewer`: run `yasmin_viewer_node` in the same namespace, or remap it.
+**Names and namespaces.** Use relative topic, service and action names (`navigate_to_pose`, not `/navigate_to_pose`) so a namespaced robot (`--ros-args -r __ns:=/robot1`) talks to its own Nav2 stack. The viewer topic is the relative `fsm_viewer`: run `yasmin_viewer_node` in the same namespace, or remap it. Machines with the same name from different publishers are listed separately (`NAME`, `NAME (2)`).
+
+**Parameters.** XML stores numeric parameters as `int`/`double` and Python as `int64`/`double`. `State::get_parameter<T>()` converts numeric values to the requested type when representable, so C++ plugin states declaring `float` or `int` parameters can be configured from either.
 
 **Execution and callback groups.** States block the calling thread while their ROS requests complete. Run the state machine in its own thread (or the main thread), not inside a callback of an executor that must also deliver the responses, feedback, or messages the states wait for. With an application-owned node, spin it on an executor in another thread; use a separate or reentrant callback group if a callback must start a state machine.
 
@@ -4663,6 +4667,64 @@ The **YASMIN PCL** package provides predefined states for [Point Cloud Library (
 - `LoadPlyState` / `SavePlyState` — Read and write PLY files
 - `PclToRosPointCloud2State` — Convert PCL point cloud to ROS `PointCloud2`
 - `RosToPclPointCloud2State` — Convert ROS `PointCloud2` to PCL point cloud
+- `PointCloud2MonitorState` — Receive `PointCloud2` messages in C++ (parameters `topic`, `qos` = `sensor_data`/`reliable`/`system_default`, `queue_size`, `timeout_sec`, `wait_for_new_message`)
+- `PointCloud2PublisherState` — Publish a `PointCloud2` (parameters `topic`, `qos` defaulting to `reliable`, `queue_size`)
+
+Each state reads `input_cloud` and writes `output_cloud`; connect stages with remappings. `RosToPclPointCloud2State` also writes the exact ROS header to `output_header`. PCL stores timestamps in microseconds, so wire that header into the `input_header` of `PclToRosPointCloud2State` to restore the nanosecond acquisition time; it is applied only while the cloud keeps that frame and time. Clouds with row padding are packed before filtering and before saving.
+
+### Point cloud pipelines: C++ or Python
+
+Keep the cloud data path in C++ and use Python for decisions. Measured on one core for an Ouster-like 6.3 MB cloud (1024×128 points, 48 bytes each):
+
+| Step | C++ | Python |
+| --- | ---: | ---: |
+| Deserialize a received message | 0.25 ms | 2.5 ms |
+| Serialize (to cross from Python to C++) | 0.5 ms | 3.5 ms |
+| 0.5 m voxel downsample (PCL vs. NumPy) | 19 ms | 120 ms |
+
+A Python subscription also deserializes every message while holding the GIL, even while its state is inactive. A Python-authored state machine can still keep the data native: create the C++ states with the factory, and the clouds then stay native shared pointers on the blackboard.
+
+```python
+from yasmin import Blackboard, StateMachine
+from yasmin_pybind_bridge import CppStateFactory
+
+factory = CppStateFactory()
+
+def cpp(class_name, **parameters):
+    state = factory.create(class_name)
+    for name, value in parameters.items():
+        state.set_parameter(name, value)
+    return state
+
+sm = StateMachine(outcomes=["done", "failed"])
+sm.add_state("RECEIVE", cpp("yasmin_pcl/PointCloud2MonitorState", topic="points"),
+             transitions={"succeeded": "TO_PCL", "timeout": "failed", "canceled": "failed"},
+             remappings={"output_cloud": "ros_in"})
+sm.add_state("TO_PCL", cpp("yasmin_pcl/RosToPclPointCloud2State"),
+             transitions={"succeeded": "VOXEL", "aborted": "failed"},
+             remappings={"input_cloud": "ros_in", "output_cloud": "pcl_in",
+                         "output_header": "header"})
+sm.add_state("VOXEL", cpp("yasmin_pcl/VoxelGridState", leaf_size_x=0.5,
+                          leaf_size_y=0.5, leaf_size_z=0.5),
+             transitions={"succeeded": "TO_ROS", "aborted": "failed"},
+             remappings={"input_cloud": "pcl_in", "output_cloud": "pcl_out"})
+sm.add_state("TO_ROS", cpp("yasmin_pcl/PclToRosPointCloud2State"),
+             transitions={"succeeded": "PUBLISH", "aborted": "failed"},
+             remappings={"input_cloud": "pcl_out", "input_header": "header",
+                         "output_cloud": "ros_out"})
+sm.add_state("PUBLISH", cpp("yasmin_pcl/PointCloud2PublisherState", topic="points_filtered"),
+             transitions={"succeeded": "done", "aborted": "failed"},
+             remappings={"input_cloud": "ros_out"})
+```
+
+C++ states in a Python process use the C++ `YasminNode`. It initializes rclcpp with the process arguments, so `--ros-args` namespaces, remappings and parameters apply to it as to rclpy. A `__node` remap therefore names both nodes.
+
+When a Python state must handle the cloud itself, cross the boundary explicitly:
+
+- C++ states accept `input_cloud` as serialized bytes, so store `rclpy.serialization.serialize_message(cloud)`.
+- Set `output_format` to `serialized` on `PclToRosPointCloud2State`, then read the result with `rclpy.serialization.deserialize_message(blackboard["cloud"], PointCloud2)`.
+
+A Python message object stored directly cannot be read by C++ states, which return `aborted` with an explanation.
 
 ## YASMIN Plugins Manager
 

@@ -139,6 +139,54 @@ Builds used a scratch workspace outside the repository, with a private `ROS_DOMA
 
 Remaining work: **P04** (Python/native cloud bridge); **P02/P03** completion; **S02** custom contexts for the singleton and passing C++ command-line arguments through auto-initialization; distinct identities for same-named machines in one viewer namespace. **R06** cleanup remains unavailable on Foxy, which is end-of-life. Older ROS distributions advertised by CI have not been built in this batch.
 
+## Implementation progress — point cloud pipeline and remaining items (2026-10-09)
+
+This batch completes P02, P03, P04 and S02, finishes the S04 viewer identity work, and fixes two new findings (N08–N09). R06 is closed as won't fix: it only affects Foxy, which is end-of-life and not a target. Of the original 24 findings, **21 are fixed, 2 are addressed by documented contracts (S01, S03), and 1 is won't fix (R06)**.
+
+| ID | Status | Implemented behavior and regression coverage |
+| --- | --- | --- |
+| P02 | Fixed | Two more PCL failures reported only through logs now return `aborted`. VoxelGrid returned its input unfiltered when voxel indices would overflow; the state now repeats PCL's check over the same selected points (verified to honor input indices). StatisticalOutlierRemoval returned an empty cloud for a zero multiplier, which the `PCLPointCloud2` filter treats as unset; it now requires a positive value. Both regressions fail on the previous implementation. |
+| P03 | Fixed | `RosToPclPointCloud2State` writes the exact ROS header to `output_header`. `PclToRosPointCloud2State` restores the nanosecond stamp from an optional `input_header`, but only while the cloud keeps that frame and microsecond time, so a stale or unrelated header is ignored. PCD/PLY writers address points as packed rows and silently wrote corrupt files for row-padded clouds (reproduced in all five writer modes); the save states now pack rows and reject foreign-endian data first. |
+| P04 | Fixed | **Native path:** new `PointCloud2MonitorState` and `PointCloud2PublisherState` plugins receive and publish clouds in C++ and store shared pointers, so a Python-authored state machine can keep the data path native through `CppStateFactory`. The monitor offers QoS profiles (default `sensor_data`), a latest-message queue, a timeout, and a freshness option. Its callback owns a shared inbox rather than the state, and cancellation updates the wait predicate under the inbox lock. **Checked bridge:** conversion and publisher states accept a `PointCloud2` shared pointer, by value, or as serialized bytes (Python `serialize_message`); `output_format: serialized` produces bytes for Python. A Python message object is rejected with a hint instead of a type error. |
+| S02 | Fixed | When the C++ singleton initializes rclcpp, it now passes the process arguments from `/proc/self/cmdline`, as `rclpy.init()` uses `sys.argv`; if parsing fails it falls back to no arguments with a warning. `--ros-args` namespaces, remappings and parameters therefore apply to C++ states, including inside Python processes. Custom contexts are supported through a `MultiThreadedExecutor` built with `ExecutorOptions`; an uninitialized custom context is rejected. A re-exec test checks namespace and `use_sim_time` from the real command line; 30/30 stress runs passed. |
+| S04 | Fixed | The viewer keys its cache by publisher GID. Same-named machines from different publishers are listed as `NAME`, `NAME (2)` in first-seen order instead of replacing each other. A new viewer test covers namespaced reception and isolation from another namespace; it fails on the previous cache. |
+| R06 | Won't fix | Pending-request removal is unavailable only on Foxy, which is end-of-life. |
+| N08 | Fixed | **P1, reproduced with Valgrind** (`Invalid write of size 4` in `pcl::ExtractIndices<PCLPointCloud2>::applyFilter`). With `keep_organized`, PCL writes a 4-byte float at every field offset of removed points. With fields narrower than 4 bytes, such as a `uint8`/`uint16` ring, this corrupts the next point (`x` 106 → 63.94 in the probe) and writes past the buffer at the last point. RandomSample, CropBox, PassThrough, SOR and RadiusOutlierRemoval were probed and do not write outside the removed point. `ExtractIndicesState` now builds the organized output itself: removed points get the user value in their floating-point fields and keep integer fields. |
+| N09 | Fixed | **P2, reproduced.** C++ plugin states could not be configured with numeric parameters from XML or Python. XML stores `int`/`double` and Python `int64`/`double`, while the plugins read `float`/`int`; after L01, `configure()` threw `has type 'double', requested 'float'`. Before L01, the bytes were silently reinterpreted. `State::get_parameter<T>()` now converts numeric values when representable and rejects fractional→integer and out-of-range values; `bool` and non-numeric types stay exact. |
+
+**Python vs. C++ on the cloud path** (Release build, one core, Ouster-like 1024×128 cloud of 6.3 MB):
+
+| Step | C++ | Python |
+| --- | ---: | ---: |
+| Deserialize received message | 0.25 ms | 2.5 ms |
+| Serialize to cross Python→C++ | 0.5 ms | 3.5 ms |
+| 0.5 m voxel downsample (PCL / NumPy) | 19 ms | 120 ms |
+
+Python subscriptions deserialize every message while holding the GIL, including while their state is inactive. **Recommendation:** keep the cloud path in C++ states and use Python for decisions. Verified end to end: a Python state machine running under `--ros-args -r __ns:=/robot1` received a 10 Hz Ouster-like stream with the C++ monitor (`/robot1/points`), ran conversion → VoxelGrid → conversion → publish, and delivered 20/20 frames (131k → 112k points) on `/robot1/points_filtered`, preserving the 123456789 ns stamp.
+
+Compatibility:
+
+- **Dependencies:** `yasmin_pcl` now depends on `rclcpp`, `std_msgs` and `yasmin_ros`.
+- **SOR:** `stddev_mul_thresh` must be positive.
+- **ExtractIndices:** organized output keeps integer fields of removed points.
+- **Saving:** the save states reject foreign-endian clouds.
+- **Auto-init arguments:** C++ auto-initialization honors the process `--ros-args`, including `__node`, which then also names the C++ singleton in Python processes.
+- **ABI:** `YasminNode` holds its executor through `std::unique_ptr<rclcpp::Executor>`.
+- **Viewer:** viewer JSON keys may carry a ` (2)` suffix.
+- **Parameters:** numeric parameter reads convert instead of throwing.
+
+Verification: all five packages rebuilt in Debug mode with `BUILD_TESTING=ON` on ROS 2 Lyrical with no compiler warnings. **487 individual cases ran with zero errors or failures.** One case skips by design: it is the child half of the command-line re-exec test, which runs and passes inside its parent. `colcon test-result` reports 540 records, which include CTest wrapper entries.
+
+| Package | `colcon` records | Individual cases |
+| --- | ---: | ---: |
+| `yasmin` | 268 | 253 |
+| `yasmin_ros` | 136 | 117 (1 skipped by design) |
+| `yasmin_viewer` | 2 | 1 |
+| `yasmin_factory` | 56 | 53 |
+| `yasmin_pcl` | 78 | 63 |
+
+The N08, P02, P03 save and S04 regressions were also run against the previous implementation, where they fail. The XML and Python parameter probes for `VoxelGridState` and `StatisticalOutlierRemovalState` failed before N09 and pass after it. `git diff --check` passed. Older ROS distributions advertised by CI have not been built.
+
 ## Findings inventory
 
 | ID | Priority | Area | Finding | Evidence |
@@ -174,6 +222,8 @@ Remaining work: **P04** (Python/native cloud bridge); **P02/P03** completion; **
 | N05 | P3 | Nav2 demos | Absolute action name; Python demo raises, C++ demo does not compile | Reproduced (follow-up review) |
 | N06 | P3 | Python viewer | Publication stops while simulated time is paused | Source-confirmed (follow-up review) |
 | N07 | P3 | Monitors | `msg_queue < 1` silently discards every message | Source-confirmed (follow-up review) |
+| N08 | P1 | PCL ExtractIndices | Organized output writes past narrow fields and the buffer end | Reproduced with Valgrind (follow-up review) |
+| N09 | P2 | State parameters | C++ plugins reject numeric parameters from XML and Python | Reproduced (follow-up review) |
 
 ### L01 — Unchecked C++ blackboard casts
 
