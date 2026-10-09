@@ -161,6 +161,8 @@ private:
   std::vector<RegionDescriptor> regions_;
   /// @brief A map of region names to their corresponding RegionBarrier.
   std::unordered_map<std::string, RegionBarrier::SharedPtr> barriers_;
+  /// @brief Barriers each region participates in, by region index.
+  std::vector<std::vector<RegionBarrier::SharedPtr>> region_barriers_;
   /// @brief A map of region names to their corresponding outcomes.
   OutcomeMap outcome_map_;
   /// @brief The default outcome to return if no specific outcome is determined.

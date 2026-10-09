@@ -22,6 +22,7 @@
 
 #include "test_parallel_utils.hpp"
 #include "yasmin/blackboard.hpp"
+#include "yasmin/cb_state.hpp"
 #include "yasmin/join_state.hpp"
 #include "yasmin/orthogonal_state.hpp"
 #include "yasmin/region_barrier.hpp"
@@ -127,6 +128,25 @@ TEST(TestRegionBarrier, TestReset) {
   t3.join();
   t4.join();
   EXPECT_EQ(counter, 4);
+}
+
+TEST(TestRegionBarrier, DropReleasesWaitingParticipant) {
+  RegionBarrier barrier(2);
+  auto waiter = std::async(std::launch::async, [&] {
+    barrier.arrive_and_wait();
+    return true;
+  });
+  EXPECT_EQ(waiter.wait_for(std::chrono::milliseconds(50)),
+            std::future_status::timeout);
+  barrier.drop();
+  ASSERT_EQ(waiter.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_TRUE(waiter.get());
+
+  // The remaining participant passes alone until reset() restores the count.
+  barrier.arrive_and_wait();
+  barrier.reset();
+  EXPECT_EQ(barrier.get_party_count(), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +280,69 @@ TEST_F(TestOrthogonalState, RejectsMultipleParticipantsFromOneRegion) {
                     {{"joined", "second"}});
   region->add_state("second", std::make_shared<JoinState>("sync"),
                     {{"joined", "done"}});
+  ort.add_region("A", region);
+  EXPECT_THROW(ort.configure(), std::invalid_argument);
+}
+
+TEST_F(TestOrthogonalState, RegionSkippingItsJoinReleasesSiblings) {
+  OrthogonalState ort("done",
+                      OutcomeMap{{"success", {{"A", "done"}, {"B", "done"}}}});
+  ort.add_region(
+      "A", make_synced_region("A", "sync", std::make_shared<TestStateA>()));
+  // B decides at runtime to finish without passing through its JoinState.
+  auto skipping = std::make_shared<StateMachine>(Outcomes{"done"});
+  skipping->add_state(
+      "decide",
+      std::make_shared<CbState>(Outcomes{"skip", "sync"},
+                                [](Blackboard::SharedPtr) {
+                                  std::this_thread::sleep_for(
+                                      std::chrono::milliseconds(100));
+                                  return std::string("skip");
+                                }),
+      {{"skip", "done"}, {"sync", "sync"}});
+  skipping->add_state("sync", std::make_shared<JoinState>("sync"),
+                      {{"joined", "done"}});
+  skipping->set_start_state("decide");
+  ort.add_region("B", skipping);
+
+  auto result = std::async(std::launch::async, [&] { return ort(blackboard); });
+  const auto ready = result.wait_for(std::chrono::seconds(2));
+  if (ready != std::future_status::ready) {
+    ort.cancel_state(); // Permit a failing regression to clean up its worker.
+  }
+  ASSERT_EQ(ready, std::future_status::ready);
+  EXPECT_EQ(result.get(), "success");
+  // The barrier is restored for the next execution.
+  EXPECT_EQ(ort(blackboard), "success");
+}
+
+TEST_F(TestOrthogonalState, NestedJoinStateParticipates) {
+  OrthogonalState ort("done",
+                      OutcomeMap{{"success", {{"A", "done"}, {"B", "done"}}}});
+  auto nested_join = std::make_shared<JoinState>("sync");
+  auto nested = std::make_shared<StateMachine>(Outcomes{"joined"});
+  nested->add_state("sync", nested_join, {{"joined", "joined"}});
+  auto region = std::make_shared<StateMachine>(Outcomes{"done"});
+  region->add_state("nested", nested, {{"joined", "done"}});
+  ort.add_region("A", region);
+  ort.add_region(
+      "B", make_synced_region("B", "sync", std::make_shared<TestStateA>()));
+
+  ort.configure();
+  ASSERT_NE(nested_join->get_barrier(), nullptr);
+  EXPECT_EQ(nested_join->get_barrier()->get_party_count(), 2);
+  EXPECT_EQ(ort(blackboard), "success");
+}
+
+TEST_F(TestOrthogonalState, RejectsMultipleNestedParticipantsFromOneRegion) {
+  OrthogonalState ort("done");
+  auto nested = std::make_shared<StateMachine>(Outcomes{"joined"});
+  nested->add_state("sync", std::make_shared<JoinState>("sync"),
+                    {{"joined", "joined"}});
+  auto region = std::make_shared<StateMachine>(Outcomes{"done"});
+  region->add_state("first", std::make_shared<JoinState>("sync"),
+                    {{"joined", "nested"}});
+  region->add_state("nested", nested, {{"joined", "done"}});
   ort.add_region("A", region);
   EXPECT_THROW(ort.configure(), std::invalid_argument);
 }

@@ -71,6 +71,16 @@ public:
   void cancel();
 
   /**
+   * @brief Removes a participant that will not arrive again.
+   *
+   * Called when a region finishes, including through a path that skips its
+   * JoinState. The remaining participants no longer wait for it; if they all
+   * arrived already, the current phase completes. reset() restores the
+   * initial participant count.
+   */
+  void drop();
+
+  /**
    * @brief Resets the barrier to its initial state.
    *
    * This method resets the barrier, allowing it to be reused for another

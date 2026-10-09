@@ -45,6 +45,18 @@ void RegionBarrier::arrive_and_wait() {
   }
 }
 
+void RegionBarrier::drop() {
+  std::lock_guard<std::mutex> lock(this->mtx_);
+  if (this->party_count_ > 0) {
+    this->party_count_--;
+  }
+  if (this->arrived_ > 0 && this->arrived_ >= this->party_count_) {
+    this->arrived_ = 0;
+    this->generation_++;
+    this->cv_.notify_all();
+  }
+}
+
 void RegionBarrier::cancel() {
   std::lock_guard<std::mutex> lock(this->mtx_);
   this->canceled_ = true;

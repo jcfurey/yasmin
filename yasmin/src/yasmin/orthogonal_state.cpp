@@ -83,40 +83,64 @@ void OrthogonalState::configure() {
     region.sm->configure();
   }
 
-  // Collect all JoinStates grouped by sync_id
-  std::unordered_map<std::string, std::vector<JoinState *>> join_groups;
+  // Collect all JoinStates grouped by sync_id, including those in nested
+  // state machines. Nested orthogonal states and concurrences own their
+  // joins.
+  struct Participant {
+    std::size_t region;
+    JoinState *join_state;
+  };
+  std::unordered_map<std::string, std::vector<Participant>> join_groups;
 
-  for (auto &region : this->regions_) {
+  for (std::size_t i = 0; i < this->regions_.size(); ++i) {
+    const auto &region = this->regions_[i];
     std::unordered_set<std::string> region_sync_ids;
-    for (const auto &[state_name, state] : region.sm->get_states()) {
-      (void)state_name;
-      JoinState *js = dynamic_cast<JoinState *>(state->get_inner_state());
-      if (js) {
-        if (!region_sync_ids.insert(js->get_sync_id()).second) {
-          throw std::invalid_argument("Region '" + region.name +
-                                      "' contains multiple JoinStates for '" +
-                                      js->get_sync_id() + "'");
+    std::unordered_set<StateMachine *> visited{region.sm.get()};
+    std::vector<StateMachine *> pending{region.sm.get()};
+    while (!pending.empty()) {
+      StateMachine *sm = pending.back();
+      pending.pop_back();
+      for (const auto &[state_name, state] : sm->get_states()) {
+        (void)state_name;
+        State *inner = state->get_inner_state();
+        if (auto *nested = dynamic_cast<StateMachine *>(inner)) {
+          if (visited.insert(nested).second) {
+            pending.push_back(nested);
+          }
+          continue;
         }
-        join_groups[js->get_sync_id()].push_back(js);
+        JoinState *js = dynamic_cast<JoinState *>(inner);
+        if (js) {
+          if (!region_sync_ids.insert(js->get_sync_id()).second) {
+            throw std::invalid_argument(
+                "Region '" + region.name +
+                "' contains multiple JoinStates for '" + js->get_sync_id() +
+                "'");
+          }
+          join_groups[js->get_sync_id()].push_back({i, js});
+        }
       }
     }
   }
 
   // Create barriers for each group
-  for (auto &[sync_id, join_states] : join_groups) {
-    if (join_states.size() < 2) {
+  this->barriers_.clear();
+  this->region_barriers_.assign(this->regions_.size(), {});
+  for (auto &[sync_id, participants] : join_groups) {
+    if (participants.size() < 2) {
       throw std::runtime_error("JoinState sync_id '" + sync_id +
                                "' has < 2 participants; "
                                "each sync point needs at least 2 regions");
     }
     auto barrier =
-        std::make_shared<RegionBarrier>(static_cast<int>(join_states.size()));
-    for (auto *js : join_states) {
-      js->set_barrier(barrier);
+        std::make_shared<RegionBarrier>(static_cast<int>(participants.size()));
+    for (const auto &participant : participants) {
+      participant.join_state->set_barrier(barrier);
+      this->region_barriers_[participant.region].push_back(barrier);
     }
     this->barriers_[sync_id] = barrier;
     YASMIN_LOG_DEBUG("Created barrier '%s' with %zu participants",
-                     sync_id.c_str(), join_states.size());
+                     sync_id.c_str(), participants.size());
   }
 
   // Build region name -> index map for O(1) lookups
@@ -162,6 +186,16 @@ std::string OrthogonalState::execute(Blackboard::SharedPtr blackboard) {
     detail::run_parallel(
         this->regions_.size(),
         [this, &blackboard, &region_outcomes](std::size_t i) {
+          // A finished region stops holding back its barriers, including
+          // when it ends through a path that skips its JoinState.
+          struct DropOnExit {
+            const std::vector<RegionBarrier::SharedPtr> &barriers;
+            ~DropOnExit() {
+              for (const auto &barrier : barriers) {
+                barrier->drop();
+              }
+            }
+          } drop_on_exit{this->region_barriers_[i]};
           auto bb_copy = std::make_shared<Blackboard>(*blackboard);
           region_outcomes[i] = (*this->regions_[i].sm)(bb_copy);
         },
