@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 
 #include <rclcpp/rclcpp.hpp>
@@ -97,6 +98,18 @@ TEST_F(TestMonitorState, TestMonitorTimeout) {
       rclcpp::QoS(10), 10, 2);
 
   EXPECT_EQ((*state)(blackboard), std::string(TIMEOUT));
+}
+
+TEST_F(TestMonitorState, TestMonitorRejectsEmptyQueue) {
+  const int empty_queue = 0;
+  EXPECT_THROW(std::make_shared<MonitorState<std_msgs::msg::String>>(
+                   "test_queue", yasmin::Outcomes{SUCCEED},
+                   [](yasmin::Blackboard::SharedPtr,
+                      std::shared_ptr<std_msgs::msg::String>) {
+                     return std::string(SUCCEED);
+                   },
+                   rclcpp::QoS(10), empty_queue),
+               std::invalid_argument);
 }
 
 TEST_F(TestMonitorState, TestMonitorRetryTimeout) {

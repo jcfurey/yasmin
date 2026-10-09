@@ -78,6 +78,16 @@ class TestYasminRos(unittest.TestCase):
         )
         self.assertEqual(TIMEOUT, state())
 
+    def test_monitor_rejects_empty_queue(self):
+        with self.assertRaises(ValueError):
+            MonitorState(
+                String,
+                "test_queue",
+                [SUCCEED],
+                monitor_handler=lambda blackboard, msg: SUCCEED,
+                msg_queue=0,
+            )
+
     def test_monitor_retry_timeout(self):
         def monitor_handler(blackboard, msg):
             return SUCCEED

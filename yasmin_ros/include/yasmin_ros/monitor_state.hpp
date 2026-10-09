@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,6 +43,12 @@ namespace yasmin_ros {
  * This class provides functionality to subscribe to a ROS 2 topic of type
  * `MsgT`, execute a custom monitoring handler, and return specific outcomes
  * based on the messages received.
+ *
+ * The subscription exists from construction, so messages received while the
+ * state is inactive are queued and the oldest is processed first. Use
+ * `msg_queue = 1` to process the most recent message. The default QoS is
+ * reliable; pass `rclcpp::SensorDataQoS()` for sensor topics, since a
+ * reliable subscription receives nothing from best-effort publishers.
  *
  * @tparam MsgT The message type of the topic to subscribe to.
  */
@@ -65,7 +72,7 @@ public:
    * @param outcomes A set of possible outcomes for this state.
    * @param monitor_handler A callback handler to process incoming messages.
    * @param qos Quality of Service settings for the topic.
-   * @param msg_queue The maximum number of messages to queue.
+   * @param msg_queue The maximum number of messages to queue (at least 1).
    * @param timeout The time in seconds to wait for messages before timing out.
    * @param maximum_retry Maximum retries of the monitor if it returns timeout.
    * Default is 3.
@@ -85,7 +92,7 @@ public:
    * @param monitor_handler A callback handler to process incoming messages.
    * @param qos Quality of Service settings for the topic.
    * @param callback_group The callback group for the subscription.
-   * @param msg_queue The maximum number of messages to queue.
+   * @param msg_queue The maximum number of messages to queue (at least 1).
    * @param timeout The time in seconds to wait for messages before timing out.
    * @param maximum_retry Maximum retries of the monitor if it returns timeout.
    * Default is 3.
@@ -107,7 +114,7 @@ public:
    * @param outcomes A set of possible outcomes for this state.
    * @param monitor_handler A callback handler to process incoming messages.
    * @param qos Quality of Service settings for the topic.
-   * @param msg_queue The maximum number of messages to queue.
+   * @param msg_queue The maximum number of messages to queue (at least 1).
    * @param timeout The time in seconds to wait for messages before timing out.
    * @param maximum_retry Maximum retries of the monitor if it returns timeout.
    * Default is 3.
@@ -120,6 +127,10 @@ public:
       : State(outcomes), topic_name(topic_name),
         monitor_handler(std::move(monitor_handler)), qos(qos),
         msg_queue(msg_queue), timeout(timeout), maximum_retry(maximum_retry) {
+
+    if (msg_queue < 1) {
+      throw std::invalid_argument("msg_queue must be at least 1");
+    }
 
     // Set outcomes
     if (timeout > 0) {

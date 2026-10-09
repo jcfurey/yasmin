@@ -116,8 +116,9 @@ public:
     }
 
     YASMIN_LOG_DEBUG("Publishing to topic '%s'", this->topic_name.c_str());
-    MsgT msg = this->create_message_handler(blackboard);
-    this->pub->publish(msg);
+    // Publishing ownership avoids a copy with intra-process communication.
+    this->pub->publish(
+        std::make_unique<MsgT>(this->create_message_handler(blackboard)));
     return basic_outcomes::SUCCEED;
   }
 

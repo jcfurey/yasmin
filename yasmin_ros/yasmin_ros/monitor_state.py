@@ -32,6 +32,12 @@ class MonitorState(State):
     This class provides functionality to subscribe to a ROS 2 topic,
     execute a custom monitoring handler, and return specific outcomes
     based on the messages received.
+
+    The subscription exists from construction, so messages received while the
+    state is inactive are queued and the oldest is processed first. Use
+    ``msg_queue=1`` to process the most recent message. The default QoS is
+    reliable; pass ``qos_profile_sensor_data`` for sensor topics, since a
+    reliable subscription receives nothing from best-effort publishers.
     """
 
     def __init__(
@@ -57,11 +63,17 @@ class MonitorState(State):
             monitor_handler (Callable[[Blackboard, Any], str]): A callback handler to process incoming messages.
             qos (Union[QoSProfile, int], optional): Quality of Service settings for the topic.
             callback_group (CallbackGroup, optional): The callback group for the subscription.
-            msg_queue (int, optional): The maximum number of messages to queue.
+            msg_queue (int, optional): The maximum number of messages to queue (at least 1).
             node (Node, optional): The ROS 2 node to use. If None, a default node is created.
             timeout (int, optional): The time in seconds to wait for messages before timing out.
             maximum_retry (int, optional): Maximum retries of the monitor if it returns timeout. Default is 3.
+
+        Raises:
+            ValueError: If msg_queue is less than 1.
         """
+
+        if msg_queue < 1:
+            raise ValueError("msg_queue must be at least 1")
 
         ## Function to handle incoming messages.
         self._monitor_handler: Callable[[Blackboard, Any], str] = monitor_handler
