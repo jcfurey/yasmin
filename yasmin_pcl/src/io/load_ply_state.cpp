@@ -26,6 +26,7 @@
 
 #include "yasmin/logs.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
+#include "yasmin_pcl/common/cloud_validation.hpp"
 
 namespace yasmin_pcl::io {
 
@@ -224,6 +225,7 @@ std::string LoadPlyState::execute(yasmin::Blackboard::SharedPtr blackboard) {
       return "aborted";
     }
 
+    common::validate_cloud(*output_cloud);
     blackboard->set<common::PclPointCloud2Ptr>("output_cloud", output_cloud);
     blackboard->set<common::Vector4fArray>("sensor_origin",
                                            common::to_array(origin));

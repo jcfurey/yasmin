@@ -16,6 +16,7 @@
 
 #include <pcl/filters/passthrough.h>
 
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -96,6 +97,15 @@ PassThroughState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   return common::execute_filter<pcl::PassThrough<pcl::PCLPointCloud2>>(
       blackboard, "PassThrough", this->extract_removed_indices_,
       [this](auto &filter) {
+        if (std::isnan(this->filter_limit_min_) ||
+            std::isnan(this->filter_limit_max_) ||
+            this->filter_limit_min_ > this->filter_limit_max_) {
+          throw std::invalid_argument("Invalid PassThrough limits");
+        }
+        if (!this->filter_field_name_.empty()) {
+          common::require_float_field(*filter.getInputCloud(),
+                                      this->filter_field_name_);
+        }
         filter.setFilterFieldName(this->filter_field_name_);
         filter.setFilterLimits(this->filter_limit_min_,
                                this->filter_limit_max_);

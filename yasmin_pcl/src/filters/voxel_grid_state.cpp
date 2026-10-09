@@ -16,6 +16,7 @@
 
 #include <pcl/filters/voxel_grid.h>
 
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <string>
@@ -105,8 +106,8 @@ void VoxelGridState::configure() {
 
 std::string VoxelGridState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
-    const auto input_cloud =
-        blackboard->get<common::PclPointCloud2Ptr>("input_cloud");
+    const auto input_cloud = common::prepare_filter_cloud(
+        blackboard->get<common::PclPointCloud2Ptr>("input_cloud"));
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
@@ -117,6 +118,22 @@ std::string VoxelGridState::execute(yasmin::Blackboard::SharedPtr blackboard) {
       YASMIN_LOG_WARN(
           "Parameter 'minimum_points_number_per_voxel' must not be negative");
       return "aborted";
+    }
+
+    for (const float leaf :
+         {this->leaf_size_x_, this->leaf_size_y_, this->leaf_size_z_}) {
+      if (!std::isfinite(leaf) || leaf <= 0 || !std::isfinite(1.0F / leaf)) {
+        throw std::invalid_argument(
+            "Voxel leaf sizes must be finite and positive");
+      }
+    }
+    if (!this->filter_field_name_.empty()) {
+      common::require_float_field(*input_cloud, this->filter_field_name_);
+      if (std::isnan(this->filter_limit_min_) ||
+          std::isnan(this->filter_limit_max_) ||
+          this->filter_limit_min_ > this->filter_limit_max_) {
+        throw std::invalid_argument("Invalid VoxelGrid limits");
+      }
     }
 
     pcl::VoxelGrid<pcl::PCLPointCloud2> filter;

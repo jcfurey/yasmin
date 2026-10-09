@@ -16,6 +16,7 @@
 
 #include <pcl/filters/radius_outlier_removal.h>
 
+#include <cmath>
 #include <limits>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -90,6 +91,10 @@ RadiusOutlierRemovalState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   return common::execute_filter<pcl::RadiusOutlierRemoval<pcl::PCLPointCloud2>>(
       blackboard, "RadiusOutlierRemoval", this->extract_removed_indices_,
       [this](auto &filter) {
+        if (!std::isfinite(this->radius_search_) || this->radius_search_ <= 0 ||
+            this->min_neighbors_in_radius_ < 0) {
+          throw std::invalid_argument("Invalid outlier removal parameters");
+        }
         filter.setRadiusSearch(this->radius_search_);
         filter.setMinNeighborsInRadius(this->min_neighbors_in_radius_);
         filter.setNegative(this->negative_);

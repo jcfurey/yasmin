@@ -17,6 +17,7 @@
 #include <pcl/filters/crop_box.h>
 
 #include <Eigen/Geometry>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <string>
@@ -167,12 +168,20 @@ void CropBoxState::configure() {
 
 std::string CropBoxState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
-    const auto input_cloud =
-        blackboard->get<common::PclPointCloud2Ptr>("input_cloud");
+    const auto input_cloud = common::prepare_filter_cloud(
+        blackboard->get<common::PclPointCloud2Ptr>("input_cloud"));
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
       return "aborted";
+    }
+
+    if (std::isnan(this->min_x_) || std::isnan(this->min_y_) ||
+        std::isnan(this->min_z_) || std::isnan(this->max_x_) ||
+        std::isnan(this->max_y_) || std::isnan(this->max_z_) ||
+        this->min_x_ > this->max_x_ || this->min_y_ > this->max_y_ ||
+        this->min_z_ > this->max_z_) {
+      throw std::invalid_argument("Invalid CropBox bounds");
     }
 
     pcl::CropBox<pcl::PCLPointCloud2> filter(this->extract_removed_indices_);

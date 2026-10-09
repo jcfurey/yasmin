@@ -15,7 +15,10 @@
 #include "yasmin_pcl/filters/project_inliers_state.hpp"
 
 #include <pcl/filters/project_inliers.h>
+#include <pcl/sample_consensus/model_types.h>
 
+#include <algorithm>
+#include <cmath>
 #include <exception>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -25,6 +28,66 @@
 #include "yasmin_pcl/common/filter_state_utils.hpp"
 
 namespace yasmin_pcl::filters {
+
+namespace {
+void validate_coefficients(int model,
+                           const common::ModelCoefficients &coefficients) {
+  const auto &values = coefficients.values;
+  std::size_t count = 0;
+  int direction = -1;
+  int radius = -1;
+  switch (model) {
+  case pcl::SACMODEL_PLANE:
+  case pcl::SACMODEL_NORMAL_PLANE:
+  case pcl::SACMODEL_PERPENDICULAR_PLANE:
+  case pcl::SACMODEL_PARALLEL_PLANE:
+  case pcl::SACMODEL_NORMAL_PARALLEL_PLANE:
+    count = 4;
+    direction = 0;
+    break;
+  case pcl::SACMODEL_LINE:
+  case pcl::SACMODEL_PARALLEL_LINE:
+    count = 6;
+    direction = 3;
+    break;
+  case pcl::SACMODEL_CIRCLE2D:
+    count = 3;
+    radius = 2;
+    break;
+  case pcl::SACMODEL_SPHERE:
+  case pcl::SACMODEL_NORMAL_SPHERE:
+    count = 4;
+    radius = 3;
+    break;
+  case pcl::SACMODEL_CYLINDER:
+    count = 7;
+    direction = 3;
+    radius = 6;
+    break;
+  case pcl::SACMODEL_CONE:
+    count = 7;
+    direction = 3;
+    break;
+  default:
+    throw std::invalid_argument("Unsupported projection model");
+  }
+  if (values.size() != count ||
+      !std::all_of(values.begin(), values.end(),
+                   [](float value) { return std::isfinite(value); })) {
+    throw std::invalid_argument(
+        "Invalid projection coefficient count or value");
+  }
+  if (direction >= 0 && values[direction] == 0 && values[direction + 1] == 0 &&
+      values[direction + 2] == 0) {
+    throw std::invalid_argument("Projection direction/normal cannot be zero");
+  }
+  if ((radius >= 0 && values[radius] <= 0) ||
+      (model == pcl::SACMODEL_CONE &&
+       (values[6] <= 0 || values[6] >= std::acos(-1.0) / 2))) {
+    throw std::invalid_argument("Invalid projection radius or cone angle");
+  }
+}
+} // namespace
 
 ProjectInliersState::ProjectInliersState()
     : yasmin::State({"succeeded", "aborted"}) {
@@ -71,8 +134,8 @@ void ProjectInliersState::configure() {
 std::string
 ProjectInliersState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
-    const auto input_cloud =
-        blackboard->get<common::PclPointCloud2Ptr>("input_cloud");
+    const auto input_cloud = common::prepare_filter_cloud(
+        blackboard->get<common::PclPointCloud2Ptr>("input_cloud"));
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
@@ -90,6 +153,7 @@ ProjectInliersState::execute(yasmin::Blackboard::SharedPtr blackboard) {
       YASMIN_LOG_WARN("Input model coefficients pointer is null");
       return "aborted";
     }
+    validate_coefficients(this->model_type_, *coefficients);
 
     pcl::ProjectInliers<pcl::PCLPointCloud2> filter;
     filter.setInputCloud(input_cloud);

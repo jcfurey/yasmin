@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <limits>
 
 #include <algorithm>
 #include <vector>
@@ -104,4 +105,17 @@ TEST(VoxelGridState, DownsamplesOnlyProvidedInputIndices) {
 
   EXPECT_LT(x_values[0], 1.0F);
   EXPECT_GT(x_values[1], 5.0F);
+}
+
+TEST(VoxelGridState, RejectsInvalidLeafSizes) {
+  for (const float leaf : {0.0F, -1.0F, std::numeric_limits<float>::infinity(),
+                           std::numeric_limits<float>::quiet_NaN()}) {
+    auto blackboard = yasmin::Blackboard::make_shared();
+    blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+        "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}}));
+    yasmin_pcl::filters::VoxelGridState state;
+    state.set_parameter<float>("leaf_size_x", leaf);
+    state.configure();
+    EXPECT_EQ(state(blackboard), "aborted");
+  }
 }

@@ -81,8 +81,8 @@ void ExtractIndicesState::configure() {
 std::string
 ExtractIndicesState::execute(yasmin::Blackboard::SharedPtr blackboard) {
   try {
-    const auto input_cloud =
-        blackboard->get<common::PclPointCloud2Ptr>("input_cloud");
+    const auto input_cloud = common::prepare_filter_cloud(
+        blackboard->get<common::PclPointCloud2Ptr>("input_cloud"));
 
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");

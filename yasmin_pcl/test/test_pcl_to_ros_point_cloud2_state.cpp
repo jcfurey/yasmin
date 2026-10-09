@@ -52,3 +52,12 @@ TEST(PclToRosPointCloud2State, AbortsWhenInputCloudIsNull) {
 
   EXPECT_EQ(state(blackboard), "aborted");
 }
+
+TEST(PclToRosPointCloud2State, RejectsTruncatedData) {
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto cloud = yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}});
+  cloud->data.pop_back();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>("input_cloud", cloud);
+  yasmin_pcl::io::PclToRosPointCloud2State state;
+  EXPECT_EQ(state(blackboard), "aborted");
+}

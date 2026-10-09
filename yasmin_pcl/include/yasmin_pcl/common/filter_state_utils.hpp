@@ -24,6 +24,7 @@
 #include "yasmin/blackboard.hpp"
 #include "yasmin/logs.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
+#include "yasmin_pcl/common/cloud_validation.hpp"
 #include "yasmin_pcl/common/pcl_compat.hpp"
 
 namespace yasmin_pcl::common {
@@ -80,11 +81,10 @@ set_optional_input_indices(FilterT &filter,
                            const yasmin::Blackboard::SharedPtr &blackboard,
                            const std::string &key = "input_indices") {
   Indices input_indices;
-  try {
-    input_indices = blackboard->get<Indices>(key);
-  } catch (const std::exception &) {
+  if (!blackboard->contains(key)) {
     return;
   }
+  input_indices = blackboard->get<Indices>(key);
 
   const auto input_cloud = filter.getInputCloud();
   const std::size_t num_points =
@@ -150,7 +150,8 @@ execute_filter(const yasmin::Blackboard::SharedPtr &blackboard,
                const std::string &filter_name, bool extract_removed_indices,
                SetupFn &&setup) {
   try {
-    const auto input_cloud = blackboard->get<PclPointCloud2Ptr>("input_cloud");
+    const auto input_cloud =
+        prepare_filter_cloud(blackboard->get<PclPointCloud2Ptr>("input_cloud"));
     if (!input_cloud) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
       return "aborted";

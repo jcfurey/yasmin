@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <limits>
 #include <pcl/sample_consensus/model_types.h>
 
 #include "test_utils.hpp"
@@ -60,5 +61,41 @@ TEST(ProjectInliersState, AbortsWhenModelCoefficientsAreMissing) {
       "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr(
                          {{1.0F, 2.0F, 1.0F}, {2.0F, 3.0F, 2.0F}}));
 
+  EXPECT_EQ(state(blackboard), "aborted");
+}
+
+TEST(ProjectInliersState, RejectsMalformedPlaneCoefficientsWithoutCrashing) {
+  for (const auto &values : std::vector<std::vector<float>>{
+           {},
+           {1.0F},
+           {0.0F, 0.0F, 0.0F, 0.0F},
+           {0.0F, 0.0F, std::numeric_limits<float>::quiet_NaN(), 0.0F},
+           {0.0F, 0.0F, 1.0F, std::numeric_limits<float>::infinity()}}) {
+    yasmin_pcl::filters::ProjectInliersState state;
+    auto blackboard = yasmin::Blackboard::make_shared();
+    auto coefficients = yasmin_pcl::common::ModelCoefficientsPtr(
+        new yasmin_pcl::common::ModelCoefficients());
+    coefficients->values.assign(values.begin(), values.end());
+    blackboard->set<yasmin_pcl::common::ModelCoefficientsPtr>(
+        "input_model_coefficients", coefficients);
+    blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+        "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}}));
+    EXPECT_EQ(state(blackboard), "aborted");
+    EXPECT_FALSE(blackboard->contains("output_cloud"));
+  }
+}
+
+TEST(ProjectInliersState, RejectsUnsupportedModel) {
+  yasmin_pcl::filters::ProjectInliersState state;
+  state.set_parameter<int>("model_type", -1);
+  state.configure();
+  auto blackboard = yasmin::Blackboard::make_shared();
+  auto coefficients = yasmin_pcl::common::ModelCoefficientsPtr(
+      new yasmin_pcl::common::ModelCoefficients());
+  coefficients->values = {0, 0, 1, 0};
+  blackboard->set<yasmin_pcl::common::ModelCoefficientsPtr>(
+      "input_model_coefficients", coefficients);
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}}));
   EXPECT_EQ(state(blackboard), "aborted");
 }

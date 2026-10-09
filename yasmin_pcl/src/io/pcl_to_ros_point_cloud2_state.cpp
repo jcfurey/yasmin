@@ -24,6 +24,7 @@
 
 #include "yasmin/logs.hpp"
 #include "yasmin_pcl/common/cloud_types.hpp"
+#include "yasmin_pcl/common/cloud_validation.hpp"
 
 namespace yasmin_pcl::io {
 
@@ -53,6 +54,7 @@ PclToRosPointCloud2State::execute(yasmin::Blackboard::SharedPtr blackboard) {
       YASMIN_LOG_WARN("Input PCL point cloud pointer is null");
       return "aborted";
     }
+    common::validate_cloud(*input_cloud);
 
     auto output_cloud = common::make_ros_point_cloud2();
     pcl_conversions::fromPCL(*input_cloud, *output_cloud);

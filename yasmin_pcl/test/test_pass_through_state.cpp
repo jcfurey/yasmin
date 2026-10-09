@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <gtest/gtest.h>
 
 #include "test_utils.hpp"
@@ -46,6 +47,65 @@ TEST(PassThroughState, FiltersCloudAndStoresRemovedIndices) {
   const auto removed_indices =
       blackboard->get<yasmin_pcl::common::Indices>("removed_indices");
   EXPECT_EQ(removed_indices.size(), 2U);
+}
+
+TEST(PassThroughState, RejectsMissingFieldAndMistypedIndices) {
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>(
+      "input_cloud", yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}}));
+  yasmin_pcl::filters::PassThroughState state;
+  state.set_parameter<std::string>("filter_field_name", "missing");
+  state.configure();
+  EXPECT_EQ(state(blackboard), "aborted");
+  state.set_parameter<std::string>("filter_field_name", "z");
+  state.configure();
+  blackboard->set<std::string>("input_indices", "wrong type");
+  EXPECT_EQ(state(blackboard), "aborted");
+}
+
+TEST(PassThroughState, PacksPaddedRowsAndPreservesInput) {
+  auto cloud = yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 1}, {4, 5, 3}});
+  const auto original = cloud->data;
+  cloud->width = 1;
+  cloud->height = 2;
+  cloud->row_step = cloud->point_step + 8;
+  cloud->data.assign(cloud->row_step * cloud->height, 0xff);
+  for (std::size_t row = 0; row < 2; ++row) {
+    std::memcpy(cloud->data.data() + row * cloud->row_step,
+                original.data() + row * cloud->point_step, cloud->point_step);
+  }
+  const auto padded = cloud->data;
+  auto blackboard = yasmin::Blackboard::make_shared();
+  blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>("input_cloud", cloud);
+  yasmin_pcl::filters::PassThroughState state;
+  state.set_parameter<std::string>("filter_field_name", "z");
+  state.set_parameter<double>("filter_limit_min", 2);
+  state.set_parameter<double>("filter_limit_max", 4);
+  state.configure();
+  EXPECT_EQ(state(blackboard), "succeeded");
+  auto output =
+      blackboard->get<yasmin_pcl::common::PclPointCloud2Ptr>("output_cloud");
+  const auto xyz = yasmin_pcl::test::to_xyz_cloud(*output);
+  ASSERT_EQ(xyz.size(), 1U);
+  EXPECT_FLOAT_EQ(xyz[0].x, 4);
+  EXPECT_FLOAT_EQ(xyz[0].z, 3);
+  EXPECT_EQ(cloud->data, padded);
+}
+
+TEST(PassThroughState, RejectsForeignEndianAndTruncatedClouds) {
+  for (bool foreign_endian : {false, true}) {
+    auto cloud = yasmin_pcl::test::create_pcl_cloud_ptr({{1, 2, 3}});
+    if (foreign_endian) {
+      cloud->is_bigendian = !cloud->is_bigendian;
+    } else {
+      cloud->data.clear();
+    }
+    auto blackboard = yasmin::Blackboard::make_shared();
+    blackboard->set<yasmin_pcl::common::PclPointCloud2Ptr>("input_cloud",
+                                                           cloud);
+    yasmin_pcl::filters::PassThroughState state;
+    EXPECT_EQ(state(blackboard), "aborted");
+  }
 }
 
 TEST(PassThroughState, ReturnsOutsideIntervalWhenNegativeEnabled) {

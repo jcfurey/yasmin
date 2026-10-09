@@ -16,6 +16,7 @@
 
 #include <pcl/filters/statistical_outlier_removal.h>
 
+#include <cmath>
 #include <limits>
 
 #include <pluginlib/class_list_macros.hpp>
@@ -90,6 +91,10 @@ std::string StatisticalOutlierRemovalState::execute(
       pcl::StatisticalOutlierRemoval<pcl::PCLPointCloud2>>(
       blackboard, "StatisticalOutlierRemoval", this->extract_removed_indices_,
       [this](auto &filter) {
+        if (this->mean_k_ <= 0 || !std::isfinite(this->stddev_mul_thresh_) ||
+            this->stddev_mul_thresh_ < 0) {
+          throw std::invalid_argument("Invalid outlier removal parameters");
+        }
         filter.setMeanK(this->mean_k_);
         filter.setStddevMulThresh(this->stddev_mul_thresh_);
         filter.setNegative(this->negative_);
